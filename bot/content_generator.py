@@ -1,7 +1,7 @@
 import httpx
 import json
 import google.generativeai as genai
-from config import GEMINI_API_KEY, VIP_CHANNEL_ID, FREE_CHANNEL_ID
+from config import GEMINI_API_KEY, VIP_CHANNEL_ID, FREE_CHANNEL_ID, MAKE_WEBHOOK_URL
 
 # Initialize Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -119,5 +119,18 @@ async def execute_daily_pipeline(bot):
         await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=image_url, caption=free_text, parse_mode="Markdown")
     except Exception as e:
         print(f"Failed to post Free: {e}")
+        
+    # Send to Make.com Webhook for Twitter/X syndication
+    if MAKE_WEBHOOK_URL:
+        print(f"Sending to Make.com Webhook for Twitter...")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                payload = {
+                    "text": free_text,
+                    "image_url": image_url
+                }
+                await client.post(MAKE_WEBHOOK_URL, json=payload)
+        except Exception as e:
+            print(f"Failed to send to Make.com: {e}")
         
     return {"status": "success", "message": "Content published to Free Channel successfully"}
