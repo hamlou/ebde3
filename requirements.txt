@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+aiogram
+sqlalchemy
+pydantic
+python-dotenv
+pytest
+httpx
+requests
+gunicorn
