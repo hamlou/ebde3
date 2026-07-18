@@ -8,3 +8,4 @@ pytest
 httpx
 requests
 gunicorn
+google-generativeai

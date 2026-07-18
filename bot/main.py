@@ -1,14 +1,14 @@
 import os
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi import FastAPI, Request, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 
 from database import init_db, get_db, User, SessionLocal
 from whop_handler import WhopWebhookPayload, process_webhook
-from config import TELEGRAM_BOT_TOKEN, VIP_CHANNEL_ID
+from config import TELEGRAM_BOT_TOKEN, VIP_CHANNEL_ID, WHOP_WEBHOOK_SECRET
 from telegram_actions import generate_invite_link, kick_user
 
 # Initialize Telegram Bot
@@ -108,6 +108,17 @@ async def whop_webhook(payload: WhopWebhookPayload, db: Session = Depends(get_db
 def health_check():
     """ Used by Make.com to ping the server every 14 mins to keep it awake """
     return {"status": "ok", "app": "Project Apex"}
+
+from content_generator import execute_daily_pipeline
+
+@app.post("/trigger/daily-content")
+async def trigger_daily_content(background_tasks: BackgroundTasks, secret: str = None):
+    """ Used by cron-job.org to trigger the automated daily post """
+    if WHOP_WEBHOOK_SECRET and secret != WHOP_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+        
+    background_tasks.add_task(execute_daily_pipeline, bot)
+    return {"status": "ok", "message": "Content pipeline triggered in background"}
 
 @app.get("/")
 def read_root():
