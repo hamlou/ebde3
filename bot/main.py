@@ -8,7 +8,7 @@ from aiogram.filters import CommandStart
 
 from database import init_db, get_db, User, SessionLocal
 from whop_handler import WhopWebhookPayload, process_webhook
-from config import TELEGRAM_BOT_TOKEN, VIP_CHANNEL_ID, WHOP_WEBHOOK_SECRET
+from config import TELEGRAM_BOT_TOKEN, VIP_CHANNEL_ID, FREE_CHANNEL_ID, WHOP_WEBHOOK_SECRET
 from telegram_actions import generate_invite_link, kick_user
 
 # Initialize Telegram Bot
