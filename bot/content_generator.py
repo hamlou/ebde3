@@ -1,6 +1,7 @@
 import httpx
 import json
 import os
+from urllib.parse import quote
 from config import VIP_CHANNEL_ID, FREE_CHANNEL_ID, MAKE_WEBHOOK_URL
 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
@@ -64,7 +65,7 @@ def generate_quickchart_url(sentiment_score):
             "roundedCorners": False
         }
     }
-    encoded_config = httpx.utils.quote(json.dumps(chart_config))
+    encoded_config = quote(json.dumps(chart_config))
     return f"https://quickchart.io/chart?c={encoded_config}&w=400&h=300"
 
 async def generate_content(market_data):

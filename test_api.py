@@ -1,16 +1,42 @@
-import requests
-import json
 import os
+import sys
+import asyncio
+import json
 
-key = "AQ.Ab8RN6K-MeBbTTjmqZNBi42sl0kRZTGxiRIvrOllUZbxlXqSjA"
-url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
-headers = {'Content-Type': 'application/json'}
-data = {
-    "contents": [{"parts": [{"text": "Hello"}]}]
-}
-try:
-    response = requests.post(url, headers=headers, json=data)
-    print(f"Status: {response.status_code}")
-    print(f"Response: {response.text}")
-except Exception as e:
-    print(f"Error: {e}")
+# Load env
+from dotenv import load_dotenv
+load_dotenv()
+
+# Add bot folder to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'bot'))
+
+from content_generator import fetch_market_data, generate_content, generate_quickchart_url, _GEMINI_KEYS
+
+async def main():
+    print(f"=== DIAGNOSTIC REPORT ===")
+    print(f"Keys loaded: {len(_GEMINI_KEYS)}")
+    print(f"Keys (masked): {[k[:10]+'...' for k in _GEMINI_KEYS]}")
+    
+    print("\n[1] Fetching market data...")
+    data = await fetch_market_data()
+    print(f"Market data: {json.dumps(data, indent=2)}")
+    
+    if not data:
+        print("ERROR: No market data returned!")
+        return
+    
+    print("\n[2] Testing Gemini AI...")
+    analysis = await generate_content(data)
+    if analysis:
+        print(f"SUCCESS: Analysis generated!")
+        print(f"Bias: {analysis.get('directional_bias')}")
+        print(f"Score: {analysis.get('sentiment_score')}")
+    else:
+        print("ERROR: Gemini returned None!")
+    
+    print("\n[3] Testing Chart URL...")
+    url = generate_quickchart_url(70)
+    print(f"Chart URL: {url[:80]}...")
+
+if __name__ == '__main__':
+    asyncio.run(main())
