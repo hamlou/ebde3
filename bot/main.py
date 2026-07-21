@@ -123,49 +123,53 @@ async def trigger_daily_content(background_tasks: BackgroundTasks, secret: str =
 @app.get("/debug/run-pipeline")
 async def debug_pipeline():
     """ Runs the full pipeline synchronously and returns detailed logs for debugging """
-    logs = []
-    logs.append(f"Keys loaded: {len(_GEMINI_KEYS)}")
-    logs.append(f"Keys (masked): {[k[:12]+'...' for k in _GEMINI_KEYS]}")
-    logs.append(f"VIP_CHANNEL_ID: {VIP_CHANNEL_ID}")
-    logs.append(f"FREE_CHANNEL_ID: {FREE_CHANNEL_ID}")
-    
-    # Step 1: Fetch market data
+    import traceback
     try:
-        data = await fetch_market_data()
-        logs.append(f"Market data fetched: {list(data.keys()) if data else 'EMPTY'}")
-    except Exception as e:
-        logs.append(f"MARKET DATA ERROR: {e}")
-        return {"logs": logs}
-    
-    # Step 2: Generate AI analysis
-    try:
-        analysis = await generate_content(data)
-        if analysis:
-            logs.append(f"AI analysis OK - Bias: {analysis.get('directional_bias')}, Score: {analysis.get('sentiment_score')}")
-        else:
-            logs.append("AI analysis returned None - all keys failed!")
+        logs = []
+        logs.append(f"Keys loaded: {len(_GEMINI_KEYS)}")
+        logs.append(f"Keys (masked): {[k[:12]+'...' for k in _GEMINI_KEYS]}")
+        logs.append(f"VIP_CHANNEL_ID: {VIP_CHANNEL_ID}")
+        logs.append(f"FREE_CHANNEL_ID: {FREE_CHANNEL_ID}")
+        
+        # Step 1: Fetch market data
+        try:
+            data = await fetch_market_data()
+            logs.append(f"Market data fetched: {list(data.keys()) if data else 'EMPTY'}")
+        except Exception as e:
+            logs.append(f"MARKET DATA ERROR: {e}")
             return {"logs": logs}
-    except Exception as e:
-        logs.append(f"AI ERROR: {e}")
-        return {"logs": logs}
-    
-    # Step 3: Generate chart
-    try:
-        image_url = generate_quickchart_url(analysis["sentiment_score"])
-        logs.append(f"Chart URL generated OK")
-    except Exception as e:
-        logs.append(f"CHART ERROR: {e}")
-        return {"logs": logs}
+        
+        # Step 2: Generate AI analysis
+        try:
+            analysis = await generate_content(data)
+            if analysis:
+                logs.append(f"AI analysis OK - Bias: {analysis.get('directional_bias')}, Score: {analysis.get('sentiment_score')}")
+            else:
+                logs.append("AI analysis returned None - all keys failed!")
+                return {"logs": logs}
+        except Exception as e:
+            logs.append(f"AI ERROR: {e}")
+            return {"logs": logs}
+        
+        # Step 3: Generate chart
+        try:
+            image_url = generate_quickchart_url(analysis.get("sentiment_score", 50))
+            logs.append(f"Chart URL generated OK")
+        except Exception as e:
+            logs.append(f"CHART ERROR: {e}")
+            return {"logs": logs}
 
-    # Step 4: Send to Telegram
-    free_text = f"🚨 **PROJECT APEX MARKET UPDATE** 🚨\n\n**Directional Bias:** {analysis['directional_bias']}\n\n{analysis['vip_analysis']}"
-    try:
-        await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=image_url, caption=free_text, parse_mode="Markdown")
-        logs.append("Telegram FREE channel post: SUCCESS")
-    except Exception as e:
-        logs.append(f"TELEGRAM ERROR: {e}")
+        # Step 4: Send to Telegram
+        try:
+            free_text = f"🚨 **PROJECT APEX MARKET UPDATE** 🚨\n\n**Directional Bias:** {analysis.get('directional_bias')}\n\n{analysis.get('vip_analysis')}"
+            await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=image_url, caption=free_text, parse_mode="Markdown")
+            logs.append("Telegram FREE channel post: SUCCESS")
+        except Exception as e:
+            logs.append(f"TELEGRAM ERROR: {e}")
 
-    return {"status": "done", "logs": logs}
+        return {"status": "done", "logs": logs}
+    except Exception as fatal_e:
+        return {"status": "fatal_error", "error": str(fatal_e), "traceback": traceback.format_exc()}
 
 @app.get("/")
 def read_root():
