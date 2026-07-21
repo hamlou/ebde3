@@ -1,11 +1,8 @@
 import httpx
 import json
-import google.generativeai as genai
 from config import GEMINI_API_KEY, VIP_CHANNEL_ID, FREE_CHANNEL_ID, MAKE_WEBHOOK_URL
 
-# Initialize Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 async def fetch_market_data():
     """Fetches real-time prices for BTC, ETH, Gold, and EUR/USD."""
@@ -82,10 +79,17 @@ async def generate_content(market_data):
     }}
     """
     try:
-        response = model.generate_content(prompt)
-        text_resp = response.text.replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(text_resp)
-        return parsed
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
+                headers={"Content-Type": "application/json"},
+                json={"contents": [{"parts": [{"text": prompt}]}]}
+            )
+            resp.raise_for_status()
+            raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            text_resp = raw_text.replace("```json", "").replace("```", "").strip()
+            parsed = json.loads(text_resp)
+            return parsed
     except Exception as e:
         print(f"Error generating AI content: {e}")
         return None

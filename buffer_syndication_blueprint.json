@@ -1,0 +1,43 @@
+{
+    "name": "Project Apex: Buffer Syndication",
+    "flow": [
+        {
+            "id": 1,
+            "module": "gateway:CustomWebHook",
+            "version": 1,
+            "parameters": {},
+            "mapper": {},
+            "metadata": {
+                "designer": {
+                    "x": 0,
+                    "y": 0
+                },
+                "restore": {}
+            }
+        },
+        {
+            "id": 2,
+            "module": "buffer:ActionCreateAStatusUpdate",
+            "version": 1,
+            "parameters": {},
+            "mapper": {
+                "text": "{{1.text}}\n\n🚨 Live trades and full bias in the free Telegram channel! Link in bio.",
+                "media": [
+                    {
+                        "photo": "{{1.image_url}}"
+                    }
+                ]
+            },
+            "metadata": {
+                "designer": {
+                    "x": 300,
+                    "y": 0
+                },
+                "restore": {}
+            }
+        }
+    ],
+    "metadata": {
+        "version": 1
+    }
+}
