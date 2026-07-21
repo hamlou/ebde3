@@ -1,8 +1,18 @@
 import httpx
 import json
-from config import GEMINI_API_KEY, VIP_CHANNEL_ID, FREE_CHANNEL_ID, MAKE_WEBHOOK_URL
+import os
+from config import VIP_CHANNEL_ID, FREE_CHANNEL_ID, MAKE_WEBHOOK_URL
 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
+# Key rotation pool — add GEMINI_API_KEY_2 and GEMINI_API_KEY_3 to Render env vars
+_GEMINI_KEYS = [
+    k for k in [
+        os.getenv("GEMINI_API_KEY", ""),
+        os.getenv("GEMINI_API_KEY_2", ""),
+        os.getenv("GEMINI_API_KEY_3", ""),
+    ] if k  # Only keep non-empty keys
+]
 
 async def fetch_market_data():
     """Fetches real-time prices for BTC, ETH, Gold, and EUR/USD."""
@@ -58,7 +68,7 @@ def generate_quickchart_url(sentiment_score):
     return f"https://quickchart.io/chart?c={encoded_config}&w=400&h=300"
 
 async def generate_content(market_data):
-    """Uses Gemini to analyze data and output a structured response."""
+    """Uses Gemini with automatic key rotation to generate a structured response."""
     prompt = f"""
     You are an elite, institutional quantitative analyst for "Project Apex" writing a quick Telegram update for your trading floor.
     Review the following real-time market data:
@@ -78,26 +88,39 @@ async def generate_content(market_data):
         "free_teaser": "<Leave blank>"
     }}
     """
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{GEMINI_API_URL}?key={GEMINI_API_KEY}",
-                headers={"Content-Type": "application/json"},
-                json={"contents": [{"parts": [{"text": prompt}]}]}
-            )
-            resp.raise_for_status()
-            raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-            text_resp = raw_text.replace("```json", "").replace("```", "").strip()
-            parsed = json.loads(text_resp)
-            return parsed
-    except Exception as e:
-        print(f"Error generating AI content: {e}")
+
+    if not _GEMINI_KEYS:
+        print("No Gemini API keys configured!")
         return None
+
+    for i, key in enumerate(_GEMINI_KEYS):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{GEMINI_API_URL}?key={key}",
+                    headers={"Content-Type": "application/json"},
+                    json={"contents": [{"parts": [{"text": prompt}]}]}
+                )
+                if resp.status_code == 429:
+                    print(f"Key {i+1} quota exhausted, trying next key...")
+                    continue  # Try next key
+                resp.raise_for_status()
+                raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                text_resp = raw_text.replace("```json", "").replace("```", "").strip()
+                parsed = json.loads(text_resp)
+                print(f"Success using key {i+1}")
+                return parsed
+        except Exception as e:
+            print(f"Error with key {i+1}: {e}")
+            continue
+
+    print("All Gemini API keys exhausted or failed.")
+    return None
 
 async def execute_daily_pipeline(bot):
     """The master function that runs the content engine."""
-    if not GEMINI_API_KEY:
-        print("GEMINI_API_KEY not set!")
+    if not _GEMINI_KEYS:
+        print("No GEMINI API Keys configured!")
         return {"status": "error", "message": "Missing API Key"}
 
     print("Fetching market data...")
