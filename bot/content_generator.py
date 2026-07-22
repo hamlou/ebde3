@@ -13,6 +13,8 @@ _GROQ_KEYS = [
     k for k in [
         os.getenv("GROQ_API_KEY", ""),
         os.getenv("groq_api_key", ""),
+        os.getenv("groq", ""),
+        os.getenv("GROQ", ""),
     ] if k
 ]
 
