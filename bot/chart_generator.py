@@ -1,37 +1,80 @@
 """
 chart_generator.py — TradingView Widget + ApiFlash Screenshot Engine
 
-Instead of drawing charts with matplotlib (which looked fake), we:
-1. Serve a raw HTML page that embeds the OFFICIAL TradingView Advanced Chart widget.
-2. Use the ApiFlash API (free tier) to take a real screenshot of that page.
-3. Return the screenshot bytes to be sent directly to Telegram.
-
-This gives 100% authentic TradingView chart screenshots for free.
+Serves a raw HTML page embedding the official TradingView Advanced Chart widget.
+When trade parameters (entry, tp, sl, direction) are provided, it draws the
+official TradingView "Long Position" or "Short Position" drawing tool on the chart.
+ApiFlash takes a screenshot of this page to produce the final image.
 """
 import httpx
-import asyncio
 from config import APIFLASH_KEY, RENDER_EXTERNAL_URL
 
 # ── TradingView symbol mapping ────────────────────────────────────────────────
-# These are the exact TradingView ticker symbols used in their widget
 TV_SYMBOL_MAP = {
     "BTC":       "BINANCE:BTCUSDT",
     "ETH":       "BINANCE:ETHUSDT",
     "GOLD":      "TVC:GOLD",
-    "SILVER":    "TVC:SILVER",
-    "EUR_USD":   "FX:EURUSD",
-    "GBP_USD":   "FX:GBPUSD",
     "XAU_USD":   "TVC:GOLD",
+    "SILVER":    "TVC:SILVER",
+    "XAG_USD":   "TVC:SILVER",
+    "EUR_USD":   "FX:EURUSD",
+    "USD_JPY":   "FX:USDJPY",
+    "GBP_USD":   "FX:GBPUSD",
+    "USD_CHF":   "FX:USDCHF",
+    "AUD_USD":   "FX:AUDUSD",
+    "USD_CAD":   "FX:USDCAD",
 }
 
-def get_tv_chart_html(symbol: str, interval: str = "240") -> str:
+def get_tv_chart_html(symbol: str, interval: str = "240",
+                      entry: float = None, tp: float = None,
+                      sl: float = None, direction: str = None) -> str:
     """
-    Generate the HTML page that embeds the TradingView Advanced Chart widget.
-    This is served as a FastAPI endpoint so ApiFlash can screenshot it.
-    
-    interval: TradingView interval codes
-        "15" = 15 min, "60" = 1 hour, "240" = 4 hour, "D" = Daily
+    Generate the HTML page embedding the TradingView Advanced Chart widget.
+    If entry/tp/sl/direction are provided, the Long/Short Position drawing
+    tool is painted on the chart using the TradingView Widget API.
     """
+
+    # Build the JavaScript that draws the position on the chart (if params given)
+    if entry and tp and sl and direction:
+        shape_type = "long_position" if direction == "BUY" else "short_position"
+        position_js = f"""
+        widget.onChartReady(function() {{
+            setTimeout(function() {{
+                try {{
+                    var chart = widget.activeChart();
+                    var entryPrice = {entry};
+                    var tpPrice    = {tp};
+                    var slPrice    = {sl};
+
+                    // Get the last visible bar's time for the shape anchor
+                    var bars = chart.getVisibleRange();
+                    var anchorTime = bars ? bars.to - 3600 : Math.floor(Date.now() / 1000);
+
+                    chart.createMultipointShape(
+                        [{{ time: anchorTime, price: entryPrice }}],
+                        {{
+                            shape: '{shape_type}',
+                            lock: true,
+                            disableSelection: true,
+                            disableSave: true,
+                            overrides: {{
+                                stopLevel: slPrice,
+                                profitLevel: tpPrice,
+                                stopLevelColor: "rgba(239, 83, 80, 0.9)",
+                                profitLevelColor: "rgba(8, 153, 129, 0.9)",
+                                backgroundColor: "rgba(8, 153, 129, 0.08)",
+                            }}
+                        }}
+                    );
+                }} catch(e) {{
+                    console.log("Shape draw error:", e);
+                }}
+            }}, 3500); // wait 3.5s for the chart to fully load all candles
+        }});
+        """
+    else:
+        position_js = ""
+
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -39,18 +82,15 @@ def get_tv_chart_html(symbol: str, interval: str = "240") -> str:
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   body {{ background: #131722; overflow: hidden; }}
-  .tradingview-widget-container {{ 
-    width: 1280px; 
-    height: 720px;
-  }}
+  #tv_chart_container {{ width: 1280px; height: 720px; }}
 </style>
 </head>
 <body>
-<div class="tradingview-widget-container">
-  <div id="tradingview_chart"></div>
-  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-  <script type="text/javascript">
-  new TradingView.widget({{
+<div id="tv_chart_container"></div>
+<script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+<script type="text/javascript">
+var widget = new TradingView.widget({{
+    "container_id": "tv_chart_container",
     "autosize": false,
     "width": 1280,
     "height": 720,
@@ -65,43 +105,44 @@ def get_tv_chart_html(symbol: str, interval: str = "240") -> str:
     "withdateranges": true,
     "hide_side_toolbar": false,
     "allow_symbol_change": false,
-    "container_id": "tradingview_chart",
-    "studies": [
-      "MASimple@tv-studytemplate",
-      "MACD@tv-studytemplate"
-    ],
+    "save_image": false,
+    "hide_top_toolbar": false,
+    "studies": [],
     "overrides": {{
-      "mainSeriesProperties.candleStyle.upColor": "#089981",
-      "mainSeriesProperties.candleStyle.downColor": "#f23645",
-      "mainSeriesProperties.candleStyle.borderUpColor": "#089981",
-      "mainSeriesProperties.candleStyle.borderDownColor": "#f23645",
-      "mainSeriesProperties.candleStyle.wickUpColor": "#089981",
-      "mainSeriesProperties.candleStyle.wickDownColor": "#f23645"
+        "mainSeriesProperties.candleStyle.upColor": "#089981",
+        "mainSeriesProperties.candleStyle.downColor": "#f23645",
+        "mainSeriesProperties.candleStyle.borderUpColor": "#089981",
+        "mainSeriesProperties.candleStyle.borderDownColor": "#f23645",
+        "mainSeriesProperties.candleStyle.wickUpColor": "#089981",
+        "mainSeriesProperties.candleStyle.wickDownColor": "#f23645",
+        "paneProperties.background": "#131722",
+        "paneProperties.vertGridProperties.color": "#2a2e39",
+        "paneProperties.horzGridProperties.color": "#2a2e39"
     }},
     "loading_screen": {{ "backgroundColor": "#131722" }}
-  }});
-  </script>
-</div>
+}});
+
+{position_js}
+</script>
 </body>
 </html>"""
 
 
-async def get_chart_for_asset(asset: str, bot_base_url: str = None) -> bytes:
+async def get_chart_for_asset(asset: str,
+                               entry: float = None, tp: float = None,
+                               sl: float = None, direction: str = None) -> bytes:
     """
     Captures a real TradingView chart screenshot using ApiFlash.
-    
-    1. Constructs the URL to our own /tv-chart/{asset} endpoint on Render.
-    2. Sends that URL to ApiFlash, which renders it in a headless Chrome and returns a PNG.
-    3. Returns the raw PNG bytes.
+    Passes trade parameters via URL query string so the chart endpoint
+    can draw the Long/Short Position tool.
     """
-    tv_symbol = TV_SYMBOL_MAP.get(asset.upper(), "BINANCE:BTCUSDT")
-    
-    # The URL of our OWN chart endpoint that ApiFlash will screenshot
-    base_url = bot_base_url or RENDER_EXTERNAL_URL or "https://ebde3.onrender.com"
+    base_url = RENDER_EXTERNAL_URL or "https://ebde3.onrender.com"
     chart_page_url = f"{base_url}/tv-chart/{asset.upper()}"
-    
-    # ApiFlash API — free tier gives 100 screenshots/month
-    apiflash_url = "https://api.apiflash.com/v1/urltoimage"
+
+    # Append position params if provided
+    if entry and tp and sl and direction:
+        chart_page_url += f"?entry={entry}&tp={tp}&sl={sl}&direction={direction}"
+
     params = {
         "access_key": APIFLASH_KEY,
         "url": chart_page_url,
@@ -109,20 +150,17 @@ async def get_chart_for_asset(asset: str, bot_base_url: str = None) -> bytes:
         "height": 720,
         "format": "png",
         "quality": 95,
-        "delay": 4,           # Wait 4 seconds for TradingView chart to fully render
-        "scroll_page": False,
+        "delay": 6,        # 6 seconds to let the chart + position shape fully render
+        "fresh": True,
         "response_type": "image",
-        "fresh": True,        # Always take a fresh screenshot (no cache)
+        "no_cookie_banners": True,
+        "no_ads": True,
     }
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(apiflash_url, params=params)
+
+    async with httpx.AsyncClient(timeout=40.0) as client:
+        resp = await client.get("https://api.apiflash.com/v1/urltoimage", params=params)
         resp.raise_for_status()
-        
-        # If ApiFlash returns an error JSON instead of image bytes
         content_type = resp.headers.get("content-type", "")
         if "json" in content_type:
-            error_data = resp.json()
-            raise ValueError(f"ApiFlash error: {error_data}")
-        
+            raise ValueError(f"ApiFlash error: {resp.json()}")
         return resp.content

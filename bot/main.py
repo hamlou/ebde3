@@ -11,7 +11,7 @@ from database import init_db, get_db, User, SessionLocal
 from whop_handler import WhopWebhookPayload, process_webhook
 from config import TELEGRAM_BOT_TOKEN, VIP_CHANNEL_ID, FREE_CHANNEL_ID, WHOP_WEBHOOK_SECRET
 from telegram_actions import generate_invite_link, kick_user
-from chart_generator import get_tv_chart_html, TV_SYMBOL_MAP
+from chart_generator import get_tv_chart_html, TV_SYMBOL_MAP, get_chart_for_asset
 
 # Initialize Telegram Bot
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -91,13 +91,20 @@ app = FastAPI(lifespan=lifespan)
 
 # ── TradingView Chart HTML endpoint — ApiFlash screenshots this ───────────────
 @app.get("/tv-chart/{asset}", response_class=HTMLResponse)
-async def tradingview_chart(asset: str):
+async def tradingview_chart(
+    asset: str,
+    entry: float = None,
+    tp: float = None,
+    sl: float = None,
+    direction: str = None
+):
     """
-    Serves a raw HTML page embedding the official TradingView Advanced Chart widget.
-    ApiFlash takes a screenshot of this page to generate the chart images.
+    Serves the TradingView widget HTML page.
+    Accepts optional query params: entry, tp, sl, direction
+    to draw the Long/Short Position tool on the chart.
     """
     tv_symbol = TV_SYMBOL_MAP.get(asset.upper(), "BINANCE:BTCUSDT")
-    html = get_tv_chart_html(tv_symbol, interval="240")  # 4H chart
+    html = get_tv_chart_html(tv_symbol, interval="240", entry=entry, tp=tp, sl=sl, direction=direction)
     return HTMLResponse(content=html)
 
 @app.post(TELEGRAM_WEBHOOK_PATH)
