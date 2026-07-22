@@ -11,6 +11,19 @@ class User(Base):
     telegram_id = Column(String, nullable=True)
     is_active = Column(Boolean, default=False)
 
+class Trade(Base):
+    __tablename__ = 'active_trades'
+    
+    id = Column(Integer, primary_key=True, index=True)
+    asset = Column(String, index=True)
+    direction = Column(String)  # BUY or SELL
+    entry_price = Column(String) # Stored as string to prevent precision loss if needed, or float
+    tp_price = Column(String)
+    sl_price = Column(String)
+    status = Column(String, default="OPEN") # OPEN, WON, LOST
+    opened_at = Column(String)
+    closed_at = Column(String, nullable=True)
+
 # For MVP, SQLite is perfect
 SQLALCHEMY_DATABASE_URL = "sqlite:///./apex.db"
 

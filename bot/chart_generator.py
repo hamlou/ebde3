@@ -1,280 +1,128 @@
-import io
-import asyncio
-import pandas as pd
-import numpy as np
-import mplfinance as mpf
-import matplotlib.patches as mpatches
-import matplotlib.pyplot as plt
+"""
+chart_generator.py — TradingView Widget + ApiFlash Screenshot Engine
+
+Instead of drawing charts with matplotlib (which looked fake), we:
+1. Serve a raw HTML page that embeds the OFFICIAL TradingView Advanced Chart widget.
+2. Use the ApiFlash API (free tier) to take a real screenshot of that page.
+3. Return the screenshot bytes to be sent directly to Telegram.
+
+This gives 100% authentic TradingView chart screenshots for free.
+"""
 import httpx
+import asyncio
+from config import APIFLASH_KEY, RENDER_EXTERNAL_URL
 
-# ── Fetch real OHLCV data from Yahoo Finance ───────────────────────────────
-
-async def fetch_ohlcv(symbol: str, interval: str = "1h", range_str: str = "7d") -> pd.DataFrame:
-    """Fetch candlestick data from Yahoo Finance public API."""
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={interval}&range={range_str}"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(url, headers=headers)
-        resp.raise_for_status()
-        raw = resp.json()
-
-    result = raw['chart']['result'][0]
-    timestamps = result['timestamp']
-    quotes = result['indicators']['quote'][0]
-    
-    df = pd.DataFrame({
-        "Open time": pd.to_datetime(timestamps, unit='s'),
-        "Open": quotes['open'],
-        "High": quotes['high'],
-        "Low": quotes['low'],
-        "Close": quotes['close'],
-        "Volume": quotes['volume']
-    })
-    
-    # Drop rows with NaN values (market closed periods)
-    df = df.dropna()
-    df.set_index("Open time", inplace=True)
-    return df
-
-
-# ── ICT / SMC Concept Detection ───────────────────────────────────────────────
-
-def detect_fair_value_gaps(df: pd.DataFrame):
-    """Find Fair Value Gaps (FVG): bullish (gap up) and bearish (gap down)."""
-    fvgs = []
-    for i in range(1, len(df) - 1):
-        prev_high = df["High"].iloc[i - 1]
-        prev_low  = df["Low"].iloc[i - 1]
-        curr_high = df["High"].iloc[i]
-        curr_low  = df["Low"].iloc[i]
-        next_high = df["High"].iloc[i + 1]
-        next_low  = df["Low"].iloc[i + 1]
-        idx       = df.index[i]
-
-        # Bullish FVG: gap between prev candle's high and next candle's low
-        if prev_high < next_low:
-            fvgs.append({"type": "bullish", "top": next_low, "bottom": prev_high, "idx": idx, "bar": i})
-        # Bearish FVG: gap between next candle's high and prev candle's low
-        elif next_high < prev_low:
-            fvgs.append({"type": "bearish", "top": prev_low, "bottom": next_high, "idx": idx, "bar": i})
-    return fvgs[-4:] if len(fvgs) > 4 else fvgs  # Show only the last 4
-
-
-def detect_order_blocks(df: pd.DataFrame):
-    """Find Order Blocks: last counter-trend candle before a strong displacement."""
-    obs = []
-    closes = df["Close"].values
-    opens  = df["Open"].values
-    highs  = df["High"].values
-    lows   = df["Low"].values
-
-    for i in range(2, len(df) - 3):
-        # Bullish OB: bearish candle followed by strong bullish displacement (3 up closes)
-        if closes[i] < opens[i]:  # bearish candle
-            if all(closes[j] > opens[j] for j in range(i + 1, i + 3)):
-                displacement = closes[i + 2] - opens[i + 1]
-                if displacement > 0.002 * closes[i]:
-                    obs.append({"type": "bullish", "top": opens[i], "bottom": closes[i], "bar": i})
-        # Bearish OB: bullish candle followed by strong bearish displacement
-        elif closes[i] > opens[i]:
-            if all(closes[j] < opens[j] for j in range(i + 1, i + 3)):
-                displacement = opens[i + 1] - closes[i + 2]
-                if displacement > 0.002 * closes[i]:
-                    obs.append({"type": "bearish", "top": closes[i], "bottom": opens[i], "bar": i})
-
-    return obs[-3:] if len(obs) > 3 else obs
-
-
-def detect_liquidity_levels(df: pd.DataFrame):
-    """Find equal highs/lows that represent liquidity pools."""
-    levels = []
-    highs = df["High"].values
-    lows  = df["Low"].values
-    tolerance = 0.0015  # 0.15% tolerance for "equal" levels
-
-    for i in range(5, len(df) - 5):
-        # Equal highs (sell-side liquidity above)
-        nearby_highs = [highs[j] for j in range(max(0, i - 8), i) if abs(highs[j] - highs[i]) / highs[i] < tolerance]
-        if len(nearby_highs) >= 2:
-            levels.append({"type": "sell_side", "price": highs[i], "bar": i})
-        # Equal lows (buy-side liquidity below)
-        nearby_lows = [lows[j] for j in range(max(0, i - 8), i) if abs(lows[j] - lows[i]) / lows[i] < tolerance]
-        if len(nearby_lows) >= 2:
-            levels.append({"type": "buy_side", "price": lows[i], "bar": i})
-
-    # Deduplicate close levels
-    unique = []
-    for lv in levels:
-        if not any(abs(lv["price"] - u["price"]) / lv["price"] < tolerance * 3 for u in unique):
-            unique.append(lv)
-    return unique[-6:] if len(unique) > 6 else unique
-
-
-def detect_structure(df: pd.DataFrame):
-    """Detect Break of Structure (BOS) and Change of Character (CHoCH)."""
-    events = []
-    closes = df["Close"].values
-    highs  = df["High"].values
-    lows   = df["Low"].values
-    n = len(df)
-
-    for i in range(3, n - 1):
-        prev_hh = max(highs[max(0, i - 5):i])
-        prev_ll = min(lows[max(0, i - 5):i])
-
-        if closes[i] > prev_hh and closes[i - 1] <= prev_hh:
-            events.append({"type": "BOS↑", "bar": i, "price": closes[i]})
-        elif closes[i] < prev_ll and closes[i - 1] >= prev_ll:
-            events.append({"type": "BOS↓", "bar": i, "price": closes[i]})
-
-    return events[-4:] if len(events) > 4 else events
-
-
-# ── Chart Renderer ─────────────────────────────────────────────────────────────
-
-async def generate_smc_chart(symbol: str = "BTC-USD", interval: str = "1h", range_str: str = "7d") -> bytes:
-    """
-    Generate a TradingView-style dark chart with ICT/SMC drawings.
-    Returns raw PNG bytes ready to send to Telegram.
-    """
-    df = await fetch_ohlcv(symbol, interval, range_str)
-
-    fvgs   = detect_fair_value_gaps(df)
-    obs    = detect_order_blocks(df)
-    liq    = detect_liquidity_levels(df)
-    structs = detect_structure(df)
-
-    # ── Dark TradingView-style theme ──────────────────────────────────────────
-    bg_color     = "#131722"
-    grid_color   = "#2a2e39"
-    text_color   = "#b2b5be"
-    bull_color   = "#089981"  # TV default green
-    bear_color   = "#f23645"  # TV default red
-    fvg_bull_col = "#089981"
-    fvg_bear_col = "#f23645"
-    ob_bull_col  = "#2962ff"
-    ob_bear_col  = "#ff9800"
-
-    mc = mpf.make_marketcolors(
-        up=bull_color, down=bear_color,
-        edge={"up": bull_color, "down": bear_color},
-        wick={"up": bull_color, "down": bear_color},
-        volume={"up": bull_color, "down": bear_color},
-    )
-    style = mpf.make_mpf_style(
-        marketcolors=mc,
-        facecolor=bg_color,
-        figcolor=bg_color,
-        gridcolor=grid_color,
-        gridstyle="--",
-        rc={
-            "axes.labelcolor": text_color,
-            "axes.edgecolor": grid_color,
-            "xtick.color": text_color,
-            "ytick.color": text_color,
-            "text.color": text_color,
-            "font.size": 10,
-            "font.family": "sans-serif",
-        },
-    )
-
-    fig, axes = mpf.plot(
-        df, type="candle", style=style,
-        figsize=(16, 9), volume=False,
-        returnfig=True, tight_layout=True,
-    )
-    ax = axes[0]
-    
-    # ── TradingView Watermark ──────────────────────────────────────────────────
-    ax.text(0.5, 0.5, f"{symbol} • {interval.upper()}",
-            transform=ax.transAxes, color="#2a2e39",
-            fontsize=60, fontweight="bold", alpha=0.3,
-            ha="center", va="center", zorder=0)
-            
-    ax.text(0.5, 0.4, "PROJECT APEX AI",
-            transform=ax.transAxes, color="#2a2e39",
-            fontsize=30, fontweight="bold", alpha=0.2,
-            ha="center", va="center", zorder=0)
-
-    xmin, xmax = ax.get_xlim()
-    x_range = xmax - xmin
-    n = len(df)
-
-    # ── Draw Fair Value Gaps ───────────────────────────────────────────────────
-    for fvg in fvgs:
-        bar  = fvg["bar"]
-        col  = fvg_bull_col if fvg["type"] == "bullish" else fvg_bear_col
-        rect = mpatches.Rectangle(
-            (bar, fvg["bottom"]),
-            n - bar,
-            fvg["top"] - fvg["bottom"],
-            linewidth=0, facecolor=col, alpha=0.18, zorder=1
-        )
-        ax.add_patch(rect)
-        ax.text(bar + 0.5, (fvg["top"] + fvg["bottom"]) / 2,
-                f"FVG {'↑' if fvg['type'] == 'bullish' else '↓'}",
-                color=col, fontsize=7, alpha=0.85, va="center")
-
-    # ── Draw Order Blocks ──────────────────────────────────────────────────────
-    for ob in obs:
-        bar = ob["bar"]
-        col = ob_bull_col if ob["type"] == "bullish" else ob_bear_col
-        rect = mpatches.Rectangle(
-            (bar, ob["bottom"]),
-            n - bar,
-            ob["top"] - ob["bottom"],
-            linewidth=1, edgecolor=col, facecolor=col, alpha=0.25, zorder=2
-        )
-        ax.add_patch(rect)
-        label = "Bull OB" if ob["type"] == "bullish" else "Bear OB"
-        ax.text(bar + 0.5, ob["top"], label, color=col, fontsize=7.5,
-                fontweight="bold", va="bottom", alpha=0.9)
-
-    # ── Draw Liquidity Levels ─────────────────────────────────────────────────
-    for lv in liq:
-        col = "#f59e0b" if lv["type"] == "sell_side" else "#818cf8"
-        ax.axhline(y=lv["price"], color=col, linewidth=0.7,
-                   linestyle="--", alpha=0.65, zorder=3)
-        label = "SSL" if lv["type"] == "sell_side" else "BSL"
-        ax.text(xmax - 1, lv["price"], f"  {label} {lv['price']:.1f}",
-                color=col, fontsize=7, va="center", alpha=0.85)
-
-    # ── Draw BOS / CHoCH labels ───────────────────────────────────────────────
-    for ev in structs:
-        col = bull_color if "↑" in ev["type"] else bear_color
-        ax.text(ev["bar"], ev["price"], f"  {ev['type']}",
-                color=col, fontsize=8, fontweight="bold",
-                va="bottom" if "↑" in ev["type"] else "top", alpha=0.9)
-
-    # ── Legend ────────────────────────────────────────────────────────────────
-    legend_items = [
-        mpatches.Patch(color=fvg_bull_col, alpha=0.5, label="FVG"),
-        mpatches.Patch(color=ob_bull_col,  alpha=0.5, label="Order Block"),
-        mpatches.Patch(color="#f59e0b",    alpha=0.7, label="Sell-side Liquidity"),
-        mpatches.Patch(color="#818cf8",    alpha=0.7, label="Buy-side Liquidity"),
-    ]
-    ax.legend(handles=legend_items, loc="upper left", fontsize=8,
-              facecolor="#1e2235", edgecolor=grid_color, labelcolor=text_color,
-              framealpha=0.85)
-
-    # ── Export to bytes ───────────────────────────────────────────────────────
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
-                facecolor=bg_color, edgecolor="none")
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
-
-
-# ── Symbol mapping ────────────────────────────────────────────────────────────
-SYMBOL_MAP = {
-    "BTC":     "BTC-USD",
-    "ETH":     "ETH-USD",
-    "GOLD":    "GC=F",
-    "EUR_USD": "EURUSD=X",
+# ── TradingView symbol mapping ────────────────────────────────────────────────
+# These are the exact TradingView ticker symbols used in their widget
+TV_SYMBOL_MAP = {
+    "BTC":       "BINANCE:BTCUSDT",
+    "ETH":       "BINANCE:ETHUSDT",
+    "GOLD":      "TVC:GOLD",
+    "SILVER":    "TVC:SILVER",
+    "EUR_USD":   "FX:EURUSD",
+    "GBP_USD":   "FX:GBPUSD",
+    "XAU_USD":   "TVC:GOLD",
 }
 
-async def get_chart_for_asset(asset: str) -> bytes:
-    """Return chart bytes for a given asset key (BTC, ETH, GOLD, EUR_USD)."""
-    symbol = SYMBOL_MAP.get(asset.upper(), "BTC-USD")
-    return await generate_smc_chart(symbol=symbol, interval="1h", range_str="7d")
+def get_tv_chart_html(symbol: str, interval: str = "240") -> str:
+    """
+    Generate the HTML page that embeds the TradingView Advanced Chart widget.
+    This is served as a FastAPI endpoint so ApiFlash can screenshot it.
+    
+    interval: TradingView interval codes
+        "15" = 15 min, "60" = 1 hour, "240" = 4 hour, "D" = Daily
+    """
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+  body {{ background: #131722; overflow: hidden; }}
+  .tradingview-widget-container {{ 
+    width: 1280px; 
+    height: 720px;
+  }}
+</style>
+</head>
+<body>
+<div class="tradingview-widget-container">
+  <div id="tradingview_chart"></div>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script type="text/javascript">
+  new TradingView.widget({{
+    "autosize": false,
+    "width": 1280,
+    "height": 720,
+    "symbol": "{symbol}",
+    "interval": "{interval}",
+    "timezone": "Etc/UTC",
+    "theme": "dark",
+    "style": "1",
+    "locale": "en",
+    "toolbar_bg": "#131722",
+    "enable_publishing": false,
+    "withdateranges": true,
+    "hide_side_toolbar": false,
+    "allow_symbol_change": false,
+    "container_id": "tradingview_chart",
+    "studies": [
+      "MASimple@tv-studytemplate",
+      "MACD@tv-studytemplate"
+    ],
+    "overrides": {{
+      "mainSeriesProperties.candleStyle.upColor": "#089981",
+      "mainSeriesProperties.candleStyle.downColor": "#f23645",
+      "mainSeriesProperties.candleStyle.borderUpColor": "#089981",
+      "mainSeriesProperties.candleStyle.borderDownColor": "#f23645",
+      "mainSeriesProperties.candleStyle.wickUpColor": "#089981",
+      "mainSeriesProperties.candleStyle.wickDownColor": "#f23645"
+    }},
+    "loading_screen": {{ "backgroundColor": "#131722" }}
+  }});
+  </script>
+</div>
+</body>
+</html>"""
+
+
+async def get_chart_for_asset(asset: str, bot_base_url: str = None) -> bytes:
+    """
+    Captures a real TradingView chart screenshot using ApiFlash.
+    
+    1. Constructs the URL to our own /tv-chart/{asset} endpoint on Render.
+    2. Sends that URL to ApiFlash, which renders it in a headless Chrome and returns a PNG.
+    3. Returns the raw PNG bytes.
+    """
+    tv_symbol = TV_SYMBOL_MAP.get(asset.upper(), "BINANCE:BTCUSDT")
+    
+    # The URL of our OWN chart endpoint that ApiFlash will screenshot
+    base_url = bot_base_url or RENDER_EXTERNAL_URL or "https://ebde3.onrender.com"
+    chart_page_url = f"{base_url}/tv-chart/{asset.upper()}"
+    
+    # ApiFlash API — free tier gives 100 screenshots/month
+    apiflash_url = "https://api.apiflash.com/v1/urltoimage"
+    params = {
+        "access_key": APIFLASH_KEY,
+        "url": chart_page_url,
+        "width": 1280,
+        "height": 720,
+        "format": "png",
+        "quality": 95,
+        "delay": 4,           # Wait 4 seconds for TradingView chart to fully render
+        "scroll_page": False,
+        "response_type": "image",
+        "fresh": True,        # Always take a fresh screenshot (no cache)
+    }
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(apiflash_url, params=params)
+        resp.raise_for_status()
+        
+        # If ApiFlash returns an error JSON instead of image bytes
+        content_type = resp.headers.get("content-type", "")
+        if "json" in content_type:
+            error_data = resp.json()
+            raise ValueError(f"ApiFlash error: {error_data}")
+        
+        return resp.content
