@@ -141,6 +141,19 @@ async def debug_pipeline():
         
         # Step 2: Generate AI analysis
         try:
+            import httpx
+            prompt = f"Test prompt with data: {data}"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                for idx, key in enumerate(_GEMINI_KEYS):
+                    resp = await client.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}",
+                        headers={"Content-Type": "application/json"},
+                        json={"contents": [{"parts": [{"text": prompt}]}]}
+                    )
+                    logs.append(f"Gemini Key {idx+1} Status: {resp.status_code}")
+                    if resp.status_code != 200:
+                        logs.append(f"Gemini Key {idx+1} Error: {resp.text[:200]}")
+            
             analysis = await generate_content(data)
             if analysis:
                 logs.append(f"AI analysis OK - Bias: {analysis.get('directional_bias')}, Score: {analysis.get('sentiment_score')}")
