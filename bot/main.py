@@ -69,10 +69,10 @@ scheduler = AsyncIOScheduler()
 async def lifespan(app: FastAPI):
     init_db()
     
-    # Start the background content scheduler (Every 4 hours)
-    scheduler.add_job(execute_daily_pipeline, 'interval', hours=4, args=[bot], id="content_pipeline", replace_existing=True)
+    # Start the background content scheduler (10 posts per day = every 144 minutes)
+    scheduler.add_job(execute_daily_pipeline, 'interval', minutes=144, args=[bot], id="content_pipeline", replace_existing=True)
     scheduler.start()
-    print("Background content scheduler started (runs every 4 hours).")
+    print("Background content scheduler started (runs every 144 minutes).")
     
     if RENDER_EXTERNAL_URL:
         # Set webhook on Render
