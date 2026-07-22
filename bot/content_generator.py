@@ -6,12 +6,16 @@ from config import VIP_CHANNEL_ID, FREE_CHANNEL_ID, MAKE_WEBHOOK_URL
 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
-# Key rotation pool — add GEMINI_API_KEY_2 and GEMINI_API_KEY_3 to Render env vars
+# Key rotation pool — check multiple possible env var names
 _GEMINI_KEYS = [
     k for k in [
         os.getenv("GEMINI_API_KEY", ""),
         os.getenv("GEMINI_API_KEY_2", ""),
         os.getenv("GEMINI_API_KEY_3", ""),
+        os.getenv("gemini_2", ""),
+        os.getenv("gemini_3", ""),
+        os.getenv("GEMINI_2", ""),
+        os.getenv("GEMINI_3", ""),
     ] if k  # Only keep non-empty keys
 ]
 
