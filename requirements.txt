@@ -12,3 +12,4 @@ mplfinance
 matplotlib
 pandas
 Pillow
+apscheduler

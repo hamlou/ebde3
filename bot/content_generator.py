@@ -87,7 +87,7 @@ async def generate_content(market_data):
     You must output your response in EXACTLY this JSON format:
     {
         "sentiment_score": <number 0-100>,
-        "directional_bias": "<Bullish | Bearish | Neutral>",
+        "directional_bias": "<BUY | SELL | HOLD>",
         "target_asset": "<BTC | ETH | GOLD | EUR_USD>",
         "vip_analysis": "<150 words of human-sounding ICT/SMC analysis focusing heavily on the target_asset. End with NFA.>",
         "free_teaser": "<Leave blank>"
@@ -162,7 +162,7 @@ async def execute_daily_pipeline(bot):
     # Use HTML parse mode — AI-generated text may contain unmatched * or _ which breaks Markdown
     import html
     safe_analysis = html.escape(analysis["vip_analysis"])
-    bias_emoji = "🟢" if analysis['directional_bias'] == 'Bullish' else ("🔴" if analysis['directional_bias'] == 'Bearish' else "🟡")
+    bias_emoji = "🟢" if analysis['directional_bias'] == 'BUY' else ("🔴" if analysis['directional_bias'] == 'SELL' else "🟡")
     free_text = (
         f"🚨 <b>PROJECT APEX — {target_asset} UPDATE</b> 🚨\n\n"
         f"{bias_emoji} <b>Directional Bias:</b> {analysis['directional_bias']} "

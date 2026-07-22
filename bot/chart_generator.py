@@ -146,14 +146,14 @@ async def generate_smc_chart(symbol: str = "BTC-USD", interval: str = "1h", rang
 
     # ── Dark TradingView-style theme ──────────────────────────────────────────
     bg_color     = "#131722"
-    grid_color   = "#1e2235"
-    text_color   = "#d1d4dc"
-    bull_color   = "#26a69a"
-    bear_color   = "#ef5350"
-    fvg_bull_col = "#26a69a"
-    fvg_bear_col = "#ef5350"
-    ob_bull_col  = "#1565c0"
-    ob_bear_col  = "#b71c1c"
+    grid_color   = "#2a2e39"
+    text_color   = "#b2b5be"
+    bull_color   = "#089981"  # TV default green
+    bear_color   = "#f23645"  # TV default red
+    fvg_bull_col = "#089981"
+    fvg_bear_col = "#f23645"
+    ob_bull_col  = "#2962ff"
+    ob_bear_col  = "#ff9800"
 
     mc = mpf.make_marketcolors(
         up=bull_color, down=bear_color,
@@ -166,27 +166,35 @@ async def generate_smc_chart(symbol: str = "BTC-USD", interval: str = "1h", rang
         facecolor=bg_color,
         figcolor=bg_color,
         gridcolor=grid_color,
-        gridstyle="-",
+        gridstyle="--",
         rc={
             "axes.labelcolor": text_color,
             "axes.edgecolor": grid_color,
             "xtick.color": text_color,
             "ytick.color": text_color,
             "text.color": text_color,
-            "font.size": 9,
+            "font.size": 10,
+            "font.family": "sans-serif",
         },
     )
 
     fig, axes = mpf.plot(
         df, type="candle", style=style,
-        figsize=(14, 8), volume=False,
+        figsize=(16, 9), volume=False,
         returnfig=True, tight_layout=True,
-        title=f"\n  {symbol}  {interval.upper()}  —  PROJECT APEX",
     )
     ax = axes[0]
-    ax.title.set_color(text_color)
-    ax.title.set_fontsize(13)
-    ax.title.set_fontweight("bold")
+    
+    # ── TradingView Watermark ──────────────────────────────────────────────────
+    ax.text(0.5, 0.5, f"{symbol} • {interval.upper()}",
+            transform=ax.transAxes, color="#2a2e39",
+            fontsize=60, fontweight="bold", alpha=0.3,
+            ha="center", va="center", zorder=0)
+            
+    ax.text(0.5, 0.4, "PROJECT APEX AI",
+            transform=ax.transAxes, color="#2a2e39",
+            fontsize=30, fontweight="bold", alpha=0.2,
+            ha="center", va="center", zorder=0)
 
     xmin, xmax = ax.get_xlim()
     x_range = xmax - xmin

@@ -60,9 +60,20 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 TELEGRAM_WEBHOOK_PATH = f"/webhook/telegram/{TELEGRAM_BOT_TOKEN}"
 TELEGRAM_WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{TELEGRAM_WEBHOOK_PATH}"
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from content_generator import execute_daily_pipeline
+
+scheduler = AsyncIOScheduler()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    
+    # Start the background content scheduler (Every 4 hours)
+    scheduler.add_job(execute_daily_pipeline, 'interval', hours=4, args=[bot], id="content_pipeline", replace_existing=True)
+    scheduler.start()
+    print("Background content scheduler started (runs every 4 hours).")
+    
     if RENDER_EXTERNAL_URL:
         # Set webhook on Render
         print(f"Setting Telegram webhook to: {TELEGRAM_WEBHOOK_URL}")
@@ -73,6 +84,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(dp.start_polling(bot))
     yield
     # Cleanup on shutdown
+    scheduler.shutdown()
     if RENDER_EXTERNAL_URL:
         await bot.delete_webhook()
     await bot.session.close()
@@ -178,7 +190,7 @@ async def debug_pipeline():
             import html as html_module
             from aiogram.types import BufferedInputFile
             safe_analysis = html_module.escape(analysis.get('vip_analysis', ''))
-            bias_emoji = "🟢" if analysis.get('directional_bias') == 'Bullish' else ("🔴" if analysis.get('directional_bias') == 'Bearish' else "🟡")
+            bias_emoji = "🟢" if analysis.get('directional_bias') == 'BUY' else ("🔴" if analysis.get('directional_bias') == 'SELL' else "🟡")
             free_text = (
                 f"🚨 <b>PROJECT APEX — {target_asset} UPDATE</b> 🚨\n\n"
                 f"{bias_emoji} <b>Directional Bias:</b> {analysis.get('directional_bias')} "
