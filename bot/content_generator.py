@@ -68,11 +68,17 @@ def generate_quickchart_url(sentiment_score):
     encoded_config = quote(json.dumps(chart_config))
     return f"https://quickchart.io/chart?c={encoded_config}&w=400&h=300"
 
+from chart_generator import get_chart_for_asset
+import random
+
 async def generate_content(market_data):
     """Uses Groq (Llama 3) to generate a structured JSON response."""
     system_prompt = """
     You are an elite, institutional quantitative analyst for "Project Apex" writing a quick Telegram update for your trading floor.
     CRITICAL INSTRUCTION: Your writing MUST NOT sound like an AI. It must sound like a highly intelligent, slightly cynical human trader typing quickly on Telegram. 
+    - Act like an ICT (Inner Circle Trader) / SMC (Smart Money Concepts) trader.
+    - Mention specific price levels from the provided data.
+    - Talk about Fair Value Gaps (FVGs), Order Blocks (OB), sweeps on liquidity (BSL/SSL), and inducement.
     - DO NOT use words like "Furthermore", "Delving into", "Crucial", "It's important to note", "In summary", or "Let's examine". 
     - DO use punchy, direct sentences. Use real trader slang occasionally (e.g., "choppy", "dumping", "sweeping liquidity", "bids stacking", "fakeout").
     - DO NOT use emojis excessively. 1 or 2 is enough.
@@ -82,12 +88,13 @@ async def generate_content(market_data):
     {
         "sentiment_score": <number 0-100>,
         "directional_bias": "<Bullish | Bearish | Neutral>",
-        "vip_analysis": "<150 words of human-sounding analysis. End with NFA.>",
+        "target_asset": "<BTC | ETH | GOLD | EUR_USD>",
+        "vip_analysis": "<150 words of human-sounding ICT/SMC analysis focusing heavily on the target_asset. End with NFA.>",
         "free_teaser": "<Leave blank>"
     }
     """
 
-    user_prompt = f"Real-time market data:\n{json.dumps(market_data, indent=2)}\n\nGenerate the JSON analysis."
+    user_prompt = f"Real-time market data:\n{json.dumps(market_data, indent=2)}\n\nGenerate the JSON analysis. Pick the most interesting asset as the target_asset."
 
     if not _GROQ_KEYS:
         print("No Groq API keys configured!")
@@ -142,8 +149,14 @@ async def execute_daily_pipeline(bot):
     if not analysis:
         return {"status": "error", "message": "AI Generation Failed"}
         
-    print("Generating Image Chart...")
-    image_url = generate_quickchart_url(analysis["sentiment_score"])
+    target_asset = analysis.get("target_asset", "BTC")
+    
+    print(f"Generating Image Chart for {target_asset}...")
+    try:
+        chart_bytes = await get_chart_for_asset(target_asset)
+    except Exception as e:
+        print(f"Failed to generate chart: {e}")
+        return {"status": "error", "message": f"Chart Generation Failed: {e}"}
     
     # Post Full Analysis to Free Channel (Audience Building Phase)
     # Use HTML parse mode — AI-generated text may contain unmatched * or _ which breaks Markdown
@@ -151,7 +164,7 @@ async def execute_daily_pipeline(bot):
     safe_analysis = html.escape(analysis["vip_analysis"])
     bias_emoji = "🟢" if analysis['directional_bias'] == 'Bullish' else ("🔴" if analysis['directional_bias'] == 'Bearish' else "🟡")
     free_text = (
-        f"🚨 <b>PROJECT APEX — MARKET UPDATE</b> 🚨\n\n"
+        f"🚨 <b>PROJECT APEX — {target_asset} UPDATE</b> 🚨\n\n"
         f"{bias_emoji} <b>Directional Bias:</b> {analysis['directional_bias']} "
         f"(Sentiment: {analysis['sentiment_score']}/100)\n\n"
         f"{safe_analysis}"
@@ -159,7 +172,9 @@ async def execute_daily_pipeline(bot):
     
     print(f"Sending to Free Channel: {FREE_CHANNEL_ID}")
     try:
-        await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=image_url, caption=free_text, parse_mode="HTML")
+        from aiogram.types import BufferedInputFile
+        photo = BufferedInputFile(chart_bytes, filename=f"{target_asset}_chart.png")
+        await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=photo, caption=free_text, parse_mode="HTML")
     except Exception as e:
         print(f"Failed to post Free: {e}")
         
@@ -170,7 +185,8 @@ async def execute_daily_pipeline(bot):
             async with httpx.AsyncClient(timeout=10.0) as client:
                 payload = {
                     "text": free_text,
-                    "image_url": image_url
+                    # We can't send raw image bytes easily in JSON, so Make.com will post just the text for now
+                    # (Unless Make is configured to accept multipart form data, text is safer)
                 }
                 await client.post(MAKE_WEBHOOK_URL, json=payload)
         except Exception as e:

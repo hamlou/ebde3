@@ -165,8 +165,10 @@ async def debug_pipeline():
         
         # Step 3: Generate chart
         try:
-            image_url = generate_quickchart_url(analysis.get("sentiment_score", 50))
-            logs.append(f"Chart URL generated OK")
+            target_asset = analysis.get("target_asset", "BTC")
+            from chart_generator import get_chart_for_asset
+            chart_bytes = await get_chart_for_asset(target_asset)
+            logs.append(f"Chart generated OK for {target_asset}")
         except Exception as e:
             logs.append(f"CHART ERROR: {e}")
             return {"logs": logs}
@@ -174,15 +176,17 @@ async def debug_pipeline():
         # Step 4: Send to Telegram
         try:
             import html as html_module
+            from aiogram.types import BufferedInputFile
             safe_analysis = html_module.escape(analysis.get('vip_analysis', ''))
             bias_emoji = "🟢" if analysis.get('directional_bias') == 'Bullish' else ("🔴" if analysis.get('directional_bias') == 'Bearish' else "🟡")
             free_text = (
-                f"🚨 <b>PROJECT APEX — MARKET UPDATE</b> 🚨\n\n"
+                f"🚨 <b>PROJECT APEX — {target_asset} UPDATE</b> 🚨\n\n"
                 f"{bias_emoji} <b>Directional Bias:</b> {analysis.get('directional_bias')} "
                 f"(Sentiment: {analysis.get('sentiment_score')}/100)\n\n"
                 f"{safe_analysis}"
             )
-            await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=image_url, caption=free_text, parse_mode="HTML")
+            photo = BufferedInputFile(chart_bytes, filename=f"{target_asset}_chart.png")
+            await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=photo, caption=free_text, parse_mode="HTML")
             logs.append("Telegram FREE channel post: SUCCESS")
         except Exception as e:
             logs.append(f"TELEGRAM ERROR: {e}")

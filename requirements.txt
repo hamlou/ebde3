@@ -8,3 +8,7 @@ pytest
 httpx
 requests
 gunicorn
+mplfinance
+matplotlib
+pandas
+Pillow
