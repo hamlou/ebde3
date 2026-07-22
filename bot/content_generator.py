@@ -4,25 +4,16 @@ import os
 from urllib.parse import quote
 from config import VIP_CHANNEL_ID, FREE_CHANNEL_ID, MAKE_WEBHOOK_URL
 
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+# --- API Configuration ---
+# We are pivoting to Groq (Llama 3 70B) because it is 100% free, blazingly fast, and requires no credit card.
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# Key rotation pool — check multiple possible env var names
-_GEMINI_KEYS = [
+# Check for Groq keys in environment variables
+_GROQ_KEYS = [
     k for k in [
-        os.getenv("GEMINI_API_KEY", ""),
-        os.getenv("GEMINI_API_KEY_2", ""),
-        os.getenv("GEMINI_API_KEY_3", ""),
-        os.getenv("gemini_2", ""),
-        os.getenv("gemini_3", ""),
-        os.getenv("GEMINI_2", ""),
-        os.getenv("GEMINI_3", ""),
-        os.getenv("gemini_4", ""),
-        os.getenv("gemini_5", ""),
-        os.getenv("gemini_6", ""),
-        os.getenv("GEMINI_4", ""),
-        os.getenv("GEMINI_5", ""),
-        os.getenv("GEMINI_6", ""),
-    ] if k  # Only keep non-empty keys
+        os.getenv("GROQ_API_KEY", ""),
+        os.getenv("groq_api_key", ""),
+    ] if k
 ]
 
 async def fetch_market_data():
@@ -34,13 +25,13 @@ async def fetch_market_data():
             cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd&include_24hr_change=true"
             cg_resp = await client.get(cg_url)
             if cg_resp.status_code == 200:
-                cg_json = cg_resp.json()
-                data['BTC'] = cg_json.get('bitcoin', {})
-                data['ETH'] = cg_json.get('ethereum', {})
+                cg_data = cg_resp.json()
+                data['BTC'] = cg_data.get('bitcoin', {})
+                data['ETH'] = cg_data.get('ethereum', {})
         except Exception as e:
-            print(f"Error fetching CoinGecko: {e}")
+            print(f"Error fetching crypto: {e}")
 
-        # Fetch TradFi (Yahoo Finance via public Chart API)
+        # Fetch Gold & Forex (Yahoo Finance via alternative public endpoint to avoid 403)
         headers = {'User-Agent': 'Mozilla/5.0'}
         try:
             # Gold
@@ -48,22 +39,19 @@ async def fetch_market_data():
             if gold_resp.status_code == 200:
                 gold_val = gold_resp.json()['chart']['result'][0]['meta']['regularMarketPrice']
                 data['GOLD'] = {"usd": gold_val, "usd_24h_change": 0.0} # Simplified change
-                
+            
             # EUR/USD
             eur_resp = await client.get("https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X", headers=headers)
             if eur_resp.status_code == 200:
                 eur_val = eur_resp.json()['chart']['result'][0]['meta']['regularMarketPrice']
                 data['EUR_USD'] = {"usd": eur_val, "usd_24h_change": 0.0}
         except Exception as e:
-            print(f"Error fetching Yahoo Finance: {e}")
+            print(f"Error fetching traditional markets: {e}")
             
     return data
 
 def generate_quickchart_url(sentiment_score):
-    """
-    Generates a radial gauge chart URL showing market sentiment.
-    Score: 0-100 (0 = Extreme Bearish, 100 = Extreme Bullish)
-    """
+    """Generates a gauge chart image URL using QuickChart."""
     chart_config = {
         "type": "radialGauge",
         "data": {
@@ -79,59 +67,67 @@ def generate_quickchart_url(sentiment_score):
     return f"https://quickchart.io/chart?c={encoded_config}&w=400&h=300"
 
 async def generate_content(market_data):
-    """Uses Gemini with automatic key rotation to generate a structured response."""
-    prompt = f"""
+    """Uses Groq (Llama 3) to generate a structured JSON response."""
+    system_prompt = """
     You are an elite, institutional quantitative analyst for "Project Apex" writing a quick Telegram update for your trading floor.
-    Review the following real-time market data:
-    {json.dumps(market_data, indent=2)}
-    
     CRITICAL INSTRUCTION: Your writing MUST NOT sound like an AI. It must sound like a highly intelligent, slightly cynical human trader typing quickly on Telegram. 
     - DO NOT use words like "Furthermore", "Delving into", "Crucial", "It's important to note", "In summary", or "Let's examine". 
     - DO use punchy, direct sentences. Use real trader slang occasionally (e.g., "choppy", "dumping", "sweeping liquidity", "bids stacking", "fakeout").
     - DO NOT use emojis excessively. 1 or 2 is enough.
     - Be brutally objective. If it looks bad, say it looks bad. 
     
-    You must output your response in EXACTLY this JSON format (no markdown code blocks, just raw JSON):
-    {{
-        "sentiment_score": <number between 0 and 100, where 0 is extreme bearish, 50 is neutral, 100 is extreme bullish>,
+    You must output your response in EXACTLY this JSON format:
+    {
+        "sentiment_score": <number 0-100>,
         "directional_bias": "<Bullish | Bearish | Neutral>",
-        "vip_analysis": "<A 150-word highly natural, human-sounding analysis covering BTC, ETH, Gold, and EUR/USD. Use the exact data points provided. Include a short 'NFA' disclaimer at the end.>",
+        "vip_analysis": "<150 words of human-sounding analysis. End with NFA.>",
         "free_teaser": "<Leave blank>"
-    }}
+    }
     """
 
-    if not _GEMINI_KEYS:
-        print("No Gemini API keys configured!")
+    user_prompt = f"Real-time market data:\n{json.dumps(market_data, indent=2)}\n\nGenerate the JSON analysis."
+
+    if not _GROQ_KEYS:
+        print("No Groq API keys configured!")
         return None
 
-    for i, key in enumerate(_GEMINI_KEYS):
+    for i, key in enumerate(_GROQ_KEYS):
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
+                payload = {
+                    "model": "llama3-70b-8192",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "response_format": {"type": "json_object"}
+                }
                 resp = await client.post(
-                    f"{GEMINI_API_URL}?key={key}",
-                    headers={"Content-Type": "application/json"},
-                    json={"contents": [{"parts": [{"text": prompt}]}]}
+                    GROQ_API_URL,
+                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json=payload
                 )
+                
                 if resp.status_code == 429:
-                    print(f"Key {i+1} quota exhausted, trying next key...")
-                    continue  # Try next key
+                    print(f"Groq Key {i+1} quota exhausted, trying next...")
+                    continue
+                    
                 resp.raise_for_status()
-                raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                text_resp = raw_text.replace("```json", "").replace("```", "").strip()
-                parsed = json.loads(text_resp)
-                print(f"Success using key {i+1}")
+                raw_text = resp.json()["choices"][0]["message"]["content"]
+                parsed = json.loads(raw_text)
+                print(f"Success using Groq key {i+1}")
                 return parsed
         except Exception as e:
-            print(f"Error with key {i+1}: {e}")
+            print(f"Error with Groq key {i+1}: {e}")
             continue
 
-    print("All Gemini API keys exhausted or failed.")
+    print("All Groq API keys exhausted or failed.")
     return None
 
 async def execute_daily_pipeline(bot):
     """The master function that runs the content engine."""
-    if not _GEMINI_KEYS:
-        print("No GEMINI API Keys configured!")
+    if not _GROQ_KEYS:
+        print("No Groq API Keys configured!")
         return {"status": "error", "message": "Missing API Key"}
 
     print("Fetching market data...")

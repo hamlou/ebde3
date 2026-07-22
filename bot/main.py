@@ -109,7 +109,7 @@ def health_check():
     """ Used by Make.com to ping the server every 14 mins to keep it awake """
     return {"status": "ok", "app": "Project Apex"}
 
-from content_generator import execute_daily_pipeline, fetch_market_data, generate_content, generate_quickchart_url, _GEMINI_KEYS
+from content_generator import execute_daily_pipeline, fetch_market_data, generate_content, generate_quickchart_url, _GROQ_KEYS
 
 @app.post("/trigger/daily-content")
 async def trigger_daily_content(background_tasks: BackgroundTasks, secret: str = None):
@@ -126,8 +126,8 @@ async def debug_pipeline():
     import traceback
     try:
         logs = []
-        logs.append(f"Keys loaded: {len(_GEMINI_KEYS)}")
-        logs.append(f"Keys (masked): {[k[:12]+'...' for k in _GEMINI_KEYS]}")
+        logs.append(f"Keys loaded: {len(_GROQ_KEYS)}")
+        logs.append(f"Keys (masked): {[k[:12]+'...' for k in _GROQ_KEYS]}")
         logs.append(f"VIP_CHANNEL_ID: {VIP_CHANNEL_ID}")
         logs.append(f"FREE_CHANNEL_ID: {FREE_CHANNEL_ID}")
         
@@ -142,17 +142,16 @@ async def debug_pipeline():
         # Step 2: Generate AI analysis
         try:
             import httpx
-            prompt = f"Test prompt with data: {data}"
             async with httpx.AsyncClient(timeout=10.0) as client:
-                for idx, key in enumerate(_GEMINI_KEYS):
+                for idx, key in enumerate(_GROQ_KEYS):
                     resp = await client.post(
-                        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}",
-                        headers={"Content-Type": "application/json"},
-                        json={"contents": [{"parts": [{"text": prompt}]}]}
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                        json={"model": "llama3-70b-8192", "messages": [{"role": "user", "content": "hi"}]}
                     )
-                    logs.append(f"Gemini Key {idx+1} Status: {resp.status_code}")
+                    logs.append(f"Groq Key {idx+1} Status: {resp.status_code}")
                     if resp.status_code != 200:
-                        logs.append(f"Gemini Key {idx+1} Error: {resp.text[:200]}")
+                        logs.append(f"Groq Key {idx+1} Error: {resp.text[:200]}")
             
             analysis = await generate_content(data)
             if analysis:
