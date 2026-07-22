@@ -146,13 +146,20 @@ async def execute_daily_pipeline(bot):
     image_url = generate_quickchart_url(analysis["sentiment_score"])
     
     # Post Full Analysis to Free Channel (Audience Building Phase)
-    free_text = f"🚨 **PROJECT APEX MARKET UPDATE** 🚨\n\n"
-    free_text += f"**Directional Bias:** {analysis['directional_bias']} (Sentiment: {analysis['sentiment_score']}/100)\n\n"
-    free_text += analysis["vip_analysis"]
+    # Use HTML parse mode — AI-generated text may contain unmatched * or _ which breaks Markdown
+    import html
+    safe_analysis = html.escape(analysis["vip_analysis"])
+    bias_emoji = "🟢" if analysis['directional_bias'] == 'Bullish' else ("🔴" if analysis['directional_bias'] == 'Bearish' else "🟡")
+    free_text = (
+        f"🚨 <b>PROJECT APEX — MARKET UPDATE</b> 🚨\n\n"
+        f"{bias_emoji} <b>Directional Bias:</b> {analysis['directional_bias']} "
+        f"(Sentiment: {analysis['sentiment_score']}/100)\n\n"
+        f"{safe_analysis}"
+    )
     
     print(f"Sending to Free Channel: {FREE_CHANNEL_ID}")
     try:
-        await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=image_url, caption=free_text, parse_mode="Markdown")
+        await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=image_url, caption=free_text, parse_mode="HTML")
     except Exception as e:
         print(f"Failed to post Free: {e}")
         

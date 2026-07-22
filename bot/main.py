@@ -173,8 +173,16 @@ async def debug_pipeline():
 
         # Step 4: Send to Telegram
         try:
-            free_text = f"🚨 **PROJECT APEX MARKET UPDATE** 🚨\n\n**Directional Bias:** {analysis.get('directional_bias')}\n\n{analysis.get('vip_analysis')}"
-            await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=image_url, caption=free_text, parse_mode="Markdown")
+            import html as html_module
+            safe_analysis = html_module.escape(analysis.get('vip_analysis', ''))
+            bias_emoji = "🟢" if analysis.get('directional_bias') == 'Bullish' else ("🔴" if analysis.get('directional_bias') == 'Bearish' else "🟡")
+            free_text = (
+                f"🚨 <b>PROJECT APEX — MARKET UPDATE</b> 🚨\n\n"
+                f"{bias_emoji} <b>Directional Bias:</b> {analysis.get('directional_bias')} "
+                f"(Sentiment: {analysis.get('sentiment_score')}/100)\n\n"
+                f"{safe_analysis}"
+            )
+            await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=image_url, caption=free_text, parse_mode="HTML")
             logs.append("Telegram FREE channel post: SUCCESS")
         except Exception as e:
             logs.append(f"TELEGRAM ERROR: {e}")
