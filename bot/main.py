@@ -147,7 +147,7 @@ async def debug_pipeline():
                     resp = await client.post(
                         "https://api.groq.com/openai/v1/chat/completions",
                         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                        json={"model": "llama3-70b-8192", "messages": [{"role": "user", "content": "hi"}]}
+                        json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": "hi"}]}
                     )
                     logs.append(f"Groq Key {idx+1} Status: {resp.status_code}")
                     if resp.status_code != 200:

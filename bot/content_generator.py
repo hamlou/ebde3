@@ -97,7 +97,7 @@ async def generate_content(market_data):
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 payload = {
-                    "model": "llama3-70b-8192",
+                    "model": "llama-3.3-70b-versatile",
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
