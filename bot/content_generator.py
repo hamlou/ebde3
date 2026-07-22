@@ -16,6 +16,12 @@ _GEMINI_KEYS = [
         os.getenv("gemini_3", ""),
         os.getenv("GEMINI_2", ""),
         os.getenv("GEMINI_3", ""),
+        os.getenv("gemini_4", ""),
+        os.getenv("gemini_5", ""),
+        os.getenv("gemini_6", ""),
+        os.getenv("GEMINI_4", ""),
+        os.getenv("GEMINI_5", ""),
+        os.getenv("GEMINI_6", ""),
     ] if k  # Only keep non-empty keys
 ]
 
