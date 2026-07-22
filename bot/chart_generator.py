@@ -7,25 +7,33 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import httpx
 
-# ── Fetch real OHLCV data from Binance (no API key required) ──────────────────
+# ── Fetch real OHLCV data from Yahoo Finance ───────────────────────────────
 
-async def fetch_ohlcv(symbol: str, interval: str = "4h", limit: int = 80) -> pd.DataFrame:
-    """Fetch candlestick data from Binance public API."""
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
+async def fetch_ohlcv(symbol: str, interval: str = "1h", range_str: str = "7d") -> pd.DataFrame:
+    """Fetch candlestick data from Yahoo Finance public API."""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={interval}&range={range_str}"
+    headers = {'User-Agent': 'Mozilla/5.0'}
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(url, params=params)
+        resp = await client.get(url, headers=headers)
         resp.raise_for_status()
         raw = resp.json()
 
-    df = pd.DataFrame(raw, columns=[
-        "Open time", "Open", "High", "Low", "Close", "Volume",
-        "Close time", "Quote vol", "Trades", "Taker buy base", "Taker buy quote", "Ignore"
-    ])
-    df["Open time"] = pd.to_datetime(df["Open time"], unit="ms")
+    result = raw['chart']['result'][0]
+    timestamps = result['timestamp']
+    quotes = result['indicators']['quote'][0]
+    
+    df = pd.DataFrame({
+        "Open time": pd.to_datetime(timestamps, unit='s'),
+        "Open": quotes['open'],
+        "High": quotes['high'],
+        "Low": quotes['low'],
+        "Close": quotes['close'],
+        "Volume": quotes['volume']
+    })
+    
+    # Drop rows with NaN values (market closed periods)
+    df = df.dropna()
     df.set_index("Open time", inplace=True)
-    for col in ["Open", "High", "Low", "Close", "Volume"]:
-        df[col] = df[col].astype(float)
     return df
 
 
@@ -124,12 +132,12 @@ def detect_structure(df: pd.DataFrame):
 
 # ── Chart Renderer ─────────────────────────────────────────────────────────────
 
-async def generate_smc_chart(symbol: str = "BTCUSDT", interval: str = "4h", limit: int = 60) -> bytes:
+async def generate_smc_chart(symbol: str = "BTC-USD", interval: str = "1h", range_str: str = "7d") -> bytes:
     """
     Generate a TradingView-style dark chart with ICT/SMC drawings.
     Returns raw PNG bytes ready to send to Telegram.
     """
-    df = await fetch_ohlcv(symbol, interval, limit)
+    df = await fetch_ohlcv(symbol, interval, range_str)
 
     fvgs   = detect_fair_value_gaps(df)
     obs    = detect_order_blocks(df)
@@ -252,13 +260,13 @@ async def generate_smc_chart(symbol: str = "BTCUSDT", interval: str = "4h", limi
 
 # ── Symbol mapping ────────────────────────────────────────────────────────────
 SYMBOL_MAP = {
-    "BTC":     "BTCUSDT",
-    "ETH":     "ETHUSDT",
-    "GOLD":    "XAUUSDT",
-    "EUR_USD": "EURUSDT",
+    "BTC":     "BTC-USD",
+    "ETH":     "ETH-USD",
+    "GOLD":    "GC=F",
+    "EUR_USD": "EURUSD=X",
 }
 
 async def get_chart_for_asset(asset: str) -> bytes:
     """Return chart bytes for a given asset key (BTC, ETH, GOLD, EUR_USD)."""
-    symbol = SYMBOL_MAP.get(asset.upper(), "BTCUSDT")
-    return await generate_smc_chart(symbol=symbol, interval="4h", limit=60)
+    symbol = SYMBOL_MAP.get(asset.upper(), "BTC-USD")
+    return await generate_smc_chart(symbol=symbol, interval="1h", range_str="7d")
