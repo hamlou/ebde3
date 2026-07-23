@@ -9,3 +9,7 @@ httpx
 requests
 gunicorn
 apscheduler
+pandas
+numpy
+smartmoneyconcepts
+ta

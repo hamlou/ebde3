@@ -131,6 +131,19 @@ async def whop_webhook(payload: WhopWebhookPayload, db: Session = Depends(get_db
 def health_check():
     return {"status": "ok", "app": "Project Apex Trade Engine"}
 
+# ── Debug: see full SMC/TA context for any asset ─────────────────────────────
+@app.get("/debug/analyze/{asset}")
+async def debug_analyze(asset: str):
+    """Show the real SMC+TA computed context for one asset."""
+    import traceback
+    try:
+        from market_analyzer import build_full_context
+        ctx = await build_full_context(asset.upper())
+        return {"status": "ok", "context": ctx}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+
 # ── Debug endpoint — manually trigger a market scan ──────────────────────────
 @app.get("/debug/scan-now")
 async def debug_scan_now():
