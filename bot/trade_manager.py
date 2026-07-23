@@ -85,6 +85,14 @@ ENTRY/TP/SL RULES:
 - SL: BELOW/ABOVE the OB that defines the setup — not arbitrary.
 - If R:R < 1.5, score it below 60. No exceptions.
 
+RISK MANAGEMENT:
+- Assign a `risk_pct` (e.g. 1.0, 1.5, 2.0).
+- If conviction is 75-80, risk 1.0%. If 80-90, risk 1.5%. If 90+, risk 2.0%.
+- If the R:R is weak or conviction is low, risk 0.0%.
+
+QUALITY OVER QUANTITY:
+- If there is no exceptionally clean trade across ALL 9 assets, return low conviction scores (<60) for everything. Do NOT force a trade if the market structure is messy. Only high-probability setups are acceptable.
+
 ANALYSIS FIELD RULES:
 - Reference ACTUAL numbers from the provided data (FVG levels, OB levels, BOS level).
 - Maximum 3 sentences. Punchy, direct, professional.
@@ -100,6 +108,7 @@ Return STRICT raw JSON array (no code blocks, no markdown wrapper):
     "entry_price": 3285.50,
     "tp_price": 3312.00,
     "sl_price": 3271.00,
+    "risk_pct": 1.5,
     "analysis": "4H bullish OB at 3271-3280 held perfectly, coinciding with an unmitigated bullish FVG at 3278-3283. 4H BOS printed bullish at 3250, EMA20 crossed above EMA50. Targeting equal highs / sell-side liquidity at 3312. NFA."
   }
 ]
@@ -203,7 +212,9 @@ async def scan_markets(bot):
             entry_price=str(best["entry_price"]),
             tp_price=str(best["tp_price"]),
             sl_price=str(best["sl_price"]),
+            risk_pct=str(best.get("risk_pct", 1.0)),
             status="OPEN",
+            mt5_status="PENDING",
             opened_at=datetime.now(timezone.utc).isoformat(),
         )
         db.add(trade); db.commit(); db.refresh(trade)

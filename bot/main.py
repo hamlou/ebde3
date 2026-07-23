@@ -144,6 +144,55 @@ async def debug_analyze(asset: str):
         return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
 
+# ── MT5 Bridge Endpoints ───────────────────────────────────────────────────
+from pydantic import BaseModel
+class MT5ConfirmRequest(BaseModel):
+    status: str
+    error: str = None
+
+@app.get("/mt5/pending")
+def get_pending_mt5_trades():
+    """Local Windows MT5 script polls this every 5 seconds to find new trades."""
+    from database import SessionLocal, Trade
+    db = SessionLocal()
+    try:
+        pending = db.query(Trade).filter(Trade.mt5_status == "PENDING", Trade.status == "OPEN").all()
+        return {
+            "status": "ok",
+            "trades": [
+                {
+                    "id": t.id,
+                    "asset": t.asset,
+                    "direction": t.direction,
+                    "entry_price": float(t.entry_price),
+                    "tp_price": float(t.tp_price),
+                    "sl_price": float(t.sl_price),
+                    "risk_pct": float(t.risk_pct) if t.risk_pct else 1.0
+                } for t in pending
+            ]
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
+
+@app.post("/mt5/confirm/{trade_id}")
+def confirm_mt5_trade(trade_id: int, req: MT5ConfirmRequest):
+    """Local Windows MT5 script reports back success or failure."""
+    from database import SessionLocal, Trade
+    db = SessionLocal()
+    try:
+        trade = db.query(Trade).filter(Trade.id == trade_id).first()
+        if not trade:
+            return {"status": "error", "error": "trade not found"}
+        trade.mt5_status = req.status
+        db.commit()
+        return {"status": "ok", "message": f"Trade {trade_id} marked as {req.status}"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
+
 # ── Debug endpoint — manually trigger a market scan ──────────────────────────
 @app.get("/debug/scan-now")
 async def debug_scan_now():
