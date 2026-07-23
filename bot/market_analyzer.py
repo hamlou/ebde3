@@ -131,14 +131,14 @@ def compute_smc(df: pd.DataFrame, tf_label: str = "4H") -> dict:
         # 2. Fair Value Gaps
         fvg_df = smc.fvg(df)
         active_fvgs = fvg_df[(fvg_df["FVG"] != 0) & (fvg_df["MitigatedIndex"] == 0)].tail(4)
-        out["fair_value_gaps"] = [
-            {
+        out["fair_value_gaps"] = []
+        for idx, (original_index, r) in enumerate(active_fvgs.iterrows()):
+            out["fair_value_gaps"].append({
+                "id": idx + 1,
                 "type": "bullish" if r["FVG"] == 1 else "bearish",
                 "top": round(float(r["Top"]), 5),
                 "bottom": round(float(r["Bottom"]), 5),
-            }
-            for _, r in active_fvgs.iterrows()
-        ]
+            })
 
         # 3. BOS and CHoCH
         structure = smc.bos_choch(df, swings)
@@ -156,14 +156,14 @@ def compute_smc(df: pd.DataFrame, tf_label: str = "4H") -> dict:
         # 4. Order Blocks
         obs = smc.ob(df, swings)
         active_obs = obs[obs["OB"] != 0].tail(4)
-        out["order_blocks"] = [
-            {
+        out["order_blocks"] = []
+        for idx, (original_index, r) in enumerate(active_obs.iterrows()):
+            out["order_blocks"].append({
+                "id": idx + 1,
                 "type": "bullish" if r["OB"] == 1 else "bearish",
                 "top": round(float(r["Top"]), 5),
                 "bottom": round(float(r["Bottom"]), 5),
-            }
-            for _, r in active_obs.iterrows()
-        ]
+            })
 
         # 5. Liquidity Levels (BSL / SSL)
         liq = smc.liquidity(df, swings)

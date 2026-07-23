@@ -93,8 +93,9 @@ async def analyze_with_real_data(contexts: list[dict]) -> list[dict]:
     system_prompt = (
         "You are an elite ICT/SMC trading algorithm. Analyze the provided market context (FVGs, OBs, Liquidity, Trend). "
         "Return a JSON array of setups: "
-        '[{"asset":"GOLD","directional_bias":"BUY"|"SELL"|"NEUTRAL","conviction":0-100,"entry_price":float,"tp_price":float,'
+        '[{"asset":"GOLD","directional_bias":"BUY"|"SELL"|"NEUTRAL","conviction":0-100,"entry_ob_id":int,"tp_fvg_id":int,'
         '"sl_price":float,"reasoning":"brief explanation","risk_pct":1.0-15.0}] '
+        "Use the 'id' field of the Order Block for entry_ob_id and the FVG for tp_fvg_id. You can specify a custom float for sl_price."
         "Conviction must be >=75 to trade. Strict ICT principles only. Set risk_pct between 5.0 and 15.0 based on conviction. "
         "CRITICAL: Do not score any setup >= 75 unless price has swept a liquidity pool ('swept': true) prior to the entry."
     )
@@ -304,13 +305,51 @@ async def scan_markets(bot):
             return
 
         existing = db.query(Trade).filter(Trade.asset == asset, Trade.status == "OPEN").first()
-        if existing: return
+        if existing:
+            return
+
+        # Deterministic ID-based SL/TP lookup to prevent LLM float transcription drift
+        entry_ob_id = best.get("entry_ob_id")
+        tp_fvg_id = best.get("tp_fvg_id")
+        sl_price = best.get("sl_price")
+        
+        entry_price = None
+        tp_price = None
+        
+        # We need to find the correct ctx for the asset
+        target_ctx = next((c for c in filtered_contexts if c["asset"] == asset), None)
+        if not target_ctx: return
+        
+        # Lookup entry OB
+        if entry_ob_id is not None:
+            for ob in target_ctx.get("4h_smc", {}).get("order_blocks", []):
+                if ob.get("id") == entry_ob_id:
+                    entry_price = ob["top"] if direction == "BUY" else ob["bottom"]
+                    break
+                    
+        # Lookup TP FVG
+        if tp_fvg_id is not None:
+            for fvg in target_ctx.get("4h_smc", {}).get("fair_value_gaps", []):
+                if fvg.get("id") == tp_fvg_id:
+                    tp_price = fvg["bottom"] if direction == "BUY" else fvg["top"]
+                    break
+        
+        # Fallbacks in case the LLM ignored the ID instructions and just output floats
+        if entry_price is None: entry_price = best.get("entry_price", 0.0)
+        if tp_price is None: tp_price = best.get("tp_price", 0.0)
+        
+        if not entry_price or not tp_price or not sl_price:
+            reason = f"[{asset}] REJECTED: Missing entry/tp/sl prices."
+            db.add(AuditLog(event_type="REJECTED", description=reason, timestamp=now_utc.isoformat()))
+            db.commit()
+            return
 
         trade = Trade(
-            asset=asset, direction=direction,
-            entry_price=str(best["entry_price"]),
-            tp_price=str(best["tp_price"]),
-            sl_price=str(best["sl_price"]),
+            asset=asset,
+            direction=direction,
+            entry_price=str(entry_price),
+            tp_price=str(tp_price),
+            sl_price=str(sl_price),
             risk_pct=str(best.get("risk_pct", 1.0)),
             conviction=int(best["conviction"]),
             status="OPEN",

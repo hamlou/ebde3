@@ -167,6 +167,7 @@ from pydantic import BaseModel
 class MT5ConfirmRequest(BaseModel):
     status: str
     error: str = None
+    fill_price: float = None
 
 @app.get("/mt5/pending")
 def get_pending_mt5_trades(api_key: str = Depends(get_api_key)):
@@ -204,6 +205,8 @@ def confirm_mt5_trade(trade_id: int, req: MT5ConfirmRequest, api_key: str = Depe
         if not trade:
             return {"status": "error", "error": "trade not found"}
         trade.mt5_status = req.status
+        if req.fill_price is not None:
+            trade.actual_entry_price = str(req.fill_price)
         db.commit()
         return {"status": "ok", "message": f"Trade {trade_id} marked as {req.status}"}
     except Exception as e:

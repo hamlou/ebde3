@@ -150,17 +150,20 @@ def execute_trade(trade):
         result = mt5.order_send(request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             print(f"ERROR: Fallback Order failed, retcode={result.retcode}")
-            return False
+            return False, None
             
-    print(f"SUCCESS: Order executed successfully! Ticket: {result.order}")
-    return True
+    fill_price = result.price
+    print(f"SUCCESS: Order executed successfully! Ticket: {result.order}, Fill Price: {fill_price}")
+    return True, fill_price
 
-def report_status(trade_id, status, error=None):
+def report_status(trade_id, status, error=None, fill_price=None):
     try:
         url = f"{API_BASE_URL}/mt5/confirm/{trade_id}"
         payload = {"status": status}
         if error:
             payload["error"] = error
+        if fill_price:
+            payload["fill_price"] = fill_price
         headers = {"X-API-Key": API_SECRET_KEY}
         requests.post(url, json=payload, headers=headers)
     except Exception as e:
@@ -181,9 +184,9 @@ def main():
                 if data.get("status") == "ok":
                     trades = data.get("trades", [])
                     for trade in trades:
-                        success = execute_trade(trade)
+                        success, fill_price = execute_trade(trade)
                         if success:
-                            report_status(trade["id"], "EXECUTED")
+                            report_status(trade["id"], "EXECUTED", fill_price=fill_price)
                         else:
                             report_status(trade["id"], "FAILED", "Order rejected by MT5")
         except Exception as e:

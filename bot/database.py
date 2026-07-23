@@ -24,6 +24,7 @@ class Trade(Base):
     entry_price = Column(String) # Stored as string to prevent precision loss if needed, or float
     tp_price = Column(String)
     sl_price = Column(String)
+    actual_entry_price = Column(String, nullable=True)
     risk_pct = Column(String, default="1.0") # E.g., "1.5" for 1.5% risk
     conviction = Column(Integer, nullable=True)
     status = Column(String, default="OPEN") # OPEN, WON, LOST
