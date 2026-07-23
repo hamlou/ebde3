@@ -15,7 +15,15 @@ import httpx
 import asyncio
 from datetime import datetime, timezone
 from database import SessionLocal, Trade
+import os
 from config import MAKE_WEBHOOK_URL, FREE_CHANNEL_ID, GEMINI_KEYS
+
+GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+_GROQ_KEYS = [k for k in [
+    os.getenv("GROQ_API_KEY", ""),
+    os.getenv("groq_api_key", ""),
+    os.getenv("groq", ""),
+] if k]
 
 ASSET_BASKET = [
     "EUR_USD", "USD_JPY", "GBP_USD", "USD_CHF",
@@ -86,8 +94,8 @@ ENTRY/TP/SL RULES:
 - If R:R < 1.5, score it below 60. No exceptions.
 
 RISK MANAGEMENT:
-- Assign a `risk_pct` (e.g. 1.0, 1.5, 2.0).
-- If conviction is 75-80, risk 1.0%. If 80-90, risk 1.5%. If 90+, risk 2.0%.
+- Assign a `risk_pct` (e.g. 5.0, 10.0, 15.0).
+- If conviction is 75-80, risk 5.0%. If 80-90, risk 10.0%. If 90+, risk 15.0%.
 - If the R:R is weak or conviction is low, risk 0.0%.
 
 QUALITY OVER QUANTITY:
@@ -156,7 +164,42 @@ Include ALL 9 assets in the response — even ones scoring 20/100. I need the fu
         except Exception as e:
             print(f"[Gemini] Key {i+1} error: {e}")
             continue
-    return []
+
+    # Fallback to Groq if all Gemini keys fail
+    if _GROQ_KEYS:
+        print("[AI] Gemini failed, falling back to Groq...")
+        for i, key in enumerate(_GROQ_KEYS):
+            try:
+                async with httpx.AsyncClient(timeout=90.0) as client:
+                    resp = await client.post(
+                        GROQ_API_URL,
+                        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "llama-3.3-70b-versatile",
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user",   "content": user_prompt}
+                            ],
+                            "temperature": 0.2,
+                            "response_format": {"type": "json_object"}
+                        }
+                    )
+                    resp.raise_for_status()
+                    raw = resp.json()["choices"][0]["message"]["content"]
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        for v in parsed.values():
+                            if isinstance(v, list):
+                                parsed = v
+                                break
+                    if isinstance(parsed, list):
+                        parsed.sort(key=lambda x: x.get("conviction", 0), reverse=True)
+                        return parsed
+            except Exception as e:
+                print(f"[Groq] Key {i+1} error: {e}")
+                continue
+                
+    raise Exception("All AI engines failed (Gemini and Groq). API keys might be exhausted.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -180,7 +223,20 @@ async def scan_markets(bot):
         return
 
     # AI analyzes REAL computed indicators
-    all_setups = await analyze_with_real_data(valid_contexts)
+    try:
+        all_setups = await analyze_with_real_data(valid_contexts)
+    except Exception as e:
+        print(f"[Scanner] AI error: {e}")
+        try:
+            await bot.send_message(
+                chat_id=FREE_CHANNEL_ID, 
+                text=f"⚠️ <b>SYSTEM ALERT</b>\n\nAI Engine failure: {e}\nMarket scanning paused until resolved.", 
+                parse_mode="HTML"
+            )
+        except:
+            pass
+        return
+
     if not all_setups:
         print("[Scanner] AI returned no setups.")
         return

@@ -7,9 +7,12 @@ import MetaTrader5 as mt5
 # ==============================================================================
 
 # 1. MT5 Account Details
-MT5_LOGIN = 12345678          # <--- CHANGE THIS to your demo account number
-MT5_PASSWORD = "your_password" # <--- CHANGE THIS to your demo password
-MT5_SERVER = "MetaQuotes-Demo" # <--- CHANGE THIS to your broker's server name
+MT5_LOGIN = 10011858378          
+MT5_PASSWORD = "Lg-1PzRo" 
+MT5_SERVER = "MetaQuotes-Demo" 
+
+# Treat account as $50 instead of the real balance
+VIRTUAL_BALANCE = 50.0
 
 # 2. Render Bot URL
 API_BASE_URL = "https://ebde3.onrender.com"
@@ -52,7 +55,8 @@ def calculate_lot_size(symbol: str, entry: float, sl: float, risk_pct: float) ->
         print("Failed to get account info")
         return 0.01
 
-    balance = account_info.balance
+    # Using $50 virtual balance as requested instead of real balance
+    balance = VIRTUAL_BALANCE
     risk_amount_usd = balance * (risk_pct / 100.0)
     
     symbol_info = mt5.symbol_info(symbol)
