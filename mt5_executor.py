@@ -43,7 +43,7 @@ def connect_mt5():
         print(f"Failed to connect at account #{MT5_LOGIN}, error code: {mt5.last_error()}")
         return False
         
-    print(f"✅ Connected to MT5 Account: {MT5_LOGIN}")
+    print(f"SUCCESS: Connected to MT5 Account: {MT5_LOGIN}")
     return True
 
 def calculate_lot_size(symbol: str, entry: float, sl: float, risk_pct: float) -> float:
@@ -112,7 +112,7 @@ def execute_trade(trade):
     symbol = SYMBOL_MAP.get(asset, asset)
 
     if not mt5.symbol_select(symbol, True):
-        print(f"❌ Failed to select {symbol}")
+        print(f"ERROR: Failed to select {symbol}")
         return False
 
     lot_size = calculate_lot_size(symbol, entry, sl, risk_pct)
@@ -120,7 +120,7 @@ def execute_trade(trade):
     order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
     price = mt5.symbol_info_tick(symbol).ask if direction == "BUY" else mt5.symbol_info_tick(symbol).bid
 
-    print(f"\n⚡ Executing #{trade_id} -> {direction} {symbol} | Risk: {risk_pct}% | Lot: {lot_size}")
+    print(f"\nEXECUTING #{trade_id} -> {direction} {symbol} | Risk: {risk_pct}% | Lot: {lot_size}")
     
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
@@ -140,15 +140,15 @@ def execute_trade(trade):
     result = mt5.order_send(request)
     
     if result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"❌ Order failed, retcode={result.retcode}")
+        print(f"ERROR: Order failed, retcode={result.retcode}")
         # Sometimes IOC filling fails on certain brokers, fallback to RETURN
         request["type_filling"] = mt5.ORDER_FILLING_RETURN
         result = mt5.order_send(request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            print(f"❌ Fallback Order failed, retcode={result.retcode}")
+            print(f"ERROR: Fallback Order failed, retcode={result.retcode}")
             return False
             
-    print(f"✅ Order executed successfully! Ticket: {result.order}")
+    print(f"SUCCESS: Order executed successfully! Ticket: {result.order}")
     return True
 
 def report_status(trade_id, status, error=None):
