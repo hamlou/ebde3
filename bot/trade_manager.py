@@ -95,7 +95,8 @@ async def analyze_with_real_data(contexts: list[dict]) -> list[dict]:
         "Return a JSON array of setups: "
         '[{"asset":"GOLD","directional_bias":"BUY"|"SELL"|"NEUTRAL","conviction":0-100,"entry_price":float,"tp_price":float,'
         '"sl_price":float,"reasoning":"brief explanation","risk_pct":1.0-15.0}] '
-        "Conviction must be >=75 to trade. Strict ICT principles only. Set risk_pct between 5.0 and 15.0 based on conviction."
+        "Conviction must be >=75 to trade. Strict ICT principles only. Set risk_pct between 5.0 and 15.0 based on conviction. "
+        "CRITICAL: Do not score any setup >= 75 unless price has swept a liquidity pool ('swept': true) prior to the entry."
     )
     user_prompt = json.dumps(contexts, indent=2)
 
@@ -206,7 +207,15 @@ async def scan_markets(bot):
     from aiogram.types import BufferedInputFile
     import html as html_module, re
 
-    print(f"\n[Scanner] Starting scan at {datetime.now(timezone.utc)}")
+    now_utc = datetime.now(timezone.utc)
+    hour = now_utc.hour
+    
+    # KILLZONE CHECK: London (7-10 UTC) or NY (12-15 UTC)
+    if not ((7 <= hour < 10) or (12 <= hour < 15)):
+        print(f"[Scanner] {now_utc.strftime('%H:%M')} UTC is outside killzones (7-10, 12-15). Skipping scan.")
+        return
+
+    print(f"\n[Scanner] Starting scan at {now_utc}")
     db = SessionLocal()
     try:
         contexts = await asyncio.gather(*[build_full_context(a) for a in ASSET_BASKET])
@@ -220,7 +229,7 @@ async def scan_markets(bot):
         if best.get("conviction", 0) < 75: return
 
         asset = best["asset"]
-        direction = best["direction"].upper()
+        direction = best["directional_bias"].upper()
 
         # HTF Trend Gate
         for ctx in valid_contexts:
@@ -282,7 +291,7 @@ async def scan_markets(bot):
     stars  = "⭐" * min(5, best["conviction"] // 20)
     arrow  = "🚀" if direction == "BUY" else "🔻"
     badge  = "🟢" if direction == "BUY" else "🔴"
-    safe_a = html_module.escape(best.get("analysis", ""))
+    safe_a = html_module.escape(best.get("reasoning", ""))
 
     msg = (
         f"{arrow} <b>APEX SIGNAL — {asset.replace('_','/')}</b> {arrow}\n\n"

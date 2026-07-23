@@ -25,6 +25,7 @@ class Trade(Base):
     tp_price = Column(String)
     sl_price = Column(String)
     risk_pct = Column(String, default="1.0") # E.g., "1.5" for 1.5% risk
+    conviction = Column(Integer, nullable=True)
     status = Column(String, default="OPEN") # OPEN, WON, LOST
     mt5_status = Column(String, default="N/A") # PENDING, EXECUTED, FAILED, N/A
     opened_at = Column(String)
