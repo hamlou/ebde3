@@ -67,7 +67,7 @@ async def fetch_ohlcv(asset: str, interval: str = "1h", period: str = "30d") -> 
 
 def resample_4h(df_1h: pd.DataFrame) -> pd.DataFrame:
     """Resample 1H → 4H candles."""
-    return df_1h.resample("4H").agg(
+    return df_1h.resample("4h").agg(
         open=("open", "first"), high=("high", "max"),
         low=("low", "min"), close=("close", "last"),
         volume=("volume", "sum")
