@@ -16,7 +16,7 @@ import asyncio
 from datetime import datetime, timezone
 from database import SessionLocal, Trade
 import os
-from config import MAKE_WEBHOOK_URL, FREE_CHANNEL_ID, GEMINI_KEYS
+from config import MAKE_WEBHOOK_URL, FREE_CHANNEL_ID, VIP_CHANNEL_ID, GEMINI_KEYS
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 _GROQ_KEYS = [k for k in [
@@ -273,7 +273,17 @@ async def scan_markets(bot):
             mt5_status="PENDING",
             opened_at=datetime.now(timezone.utc).isoformat(),
         )
-        db.add(trade); db.commit(); db.refresh(trade)
+        db.add(trade)
+        
+        from database import AuditLog
+        log = AuditLog(
+            event_type="TRADE_OPENED",
+            description=f"Opened {direction} on {asset} @ {best['entry_price']}. Conviction: {best['conviction']}.",
+            timestamp=datetime.now(timezone.utc).isoformat()
+        )
+        db.add(log)
+        db.commit()
+        db.refresh(trade)
         print(f"[Scanner] Trade #{trade.id} opened: {direction} {asset} @ {best['entry_price']}")
     finally:
         db.close()
@@ -314,17 +324,34 @@ async def scan_markets(bot):
         f"📋 {safe_a}\n\n"
         f"<i>Signal #{trade.id} • Real ICT/SMC • NFA</i>"
     )
+    
+    teaser_msg = (
+        f"{arrow} <b>APEX VIP ALERT — {asset.replace('_','/')}</b> {arrow}\n\n"
+        f"{badge} <b>{direction}</b>  |  {stars} ({best['conviction']}/100)\n\n"
+        f"📍 <b>Entry:</b>  <i>[Hidden — VIP Only]</i>\n"
+        f"🎯 <b>TP:</b>     <i>[Hidden — VIP Only]</i>\n"
+        f"🛑 <b>SL:</b>     {best['sl_price']}\n"
+        f"📊 <b>R:R:</b>    {rrr}\n\n"
+        f"📋 {safe_a}\n\n"
+        f"🔒 <i>Unlock full params instantly via Whop.</i>"
+    )
 
-    # Post to Telegram
+    # Post full signal to VIP
     try:
-        if chart_bytes:
+        if chart_bytes and VIP_CHANNEL_ID:
             photo = BufferedInputFile(chart_bytes, filename=f"{asset}_signal.png")
-            await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=photo, caption=msg, parse_mode="HTML")
-        else:
-            await bot.send_message(chat_id=FREE_CHANNEL_ID, text=msg, parse_mode="HTML")
-        print("[Scanner] Posted to Telegram ✅")
+            await bot.send_photo(chat_id=VIP_CHANNEL_ID, photo=photo, caption=msg, parse_mode="HTML")
+        elif VIP_CHANNEL_ID:
+            await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="HTML")
     except Exception as e:
-        print(f"[Scanner] Telegram error: {e}")
+        print(f"[Scanner] VIP Telegram error: {e}")
+
+    # Post teaser to FREE
+    try:
+        await bot.send_message(chat_id=FREE_CHANNEL_ID, text=teaser_msg, parse_mode="HTML")
+        print("[Scanner] Posted to Telegram VIP and Free ✅")
+    except Exception as e:
+        print(f"[Scanner] Free Telegram error: {e}")
 
     # Fire immediately to Make.com → X/Twitter
     if MAKE_WEBHOOK_URL:
@@ -390,17 +417,34 @@ async def monitor_positions(bot):
                 try:
                     if chart_bytes:
                         photo = BufferedInputFile(chart_bytes, filename=f"{trade.asset}_tp.png")
+                        if VIP_CHANNEL_ID: await bot.send_photo(chat_id=VIP_CHANNEL_ID, photo=photo, caption=msg, parse_mode="HTML")
                         await bot.send_photo(chat_id=FREE_CHANNEL_ID, photo=photo, caption=msg, parse_mode="HTML")
                     else:
+                        if VIP_CHANNEL_ID: await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="HTML")
                         await bot.send_message(chat_id=FREE_CHANNEL_ID, text=msg, parse_mode="HTML")
                 except Exception as e:
                     print(f"[Monitor] BOOM post failed: {e}")
 
             elif sl_hit:
+                pips, pct = calculate_profit(trade.asset, entry, sl, trade.direction)
                 trade.status   = "LOST"
                 trade.closed_at = datetime.now(timezone.utc).isoformat()
                 db.commit()
-                print(f"[Monitor] #{trade.id} {trade.asset} SL hit. Silent close.")
+                print(f"[Monitor] #{trade.id} {trade.asset} SL hit. {pips} pips")
+
+                msg = (
+                    f"⚠️ <b>STOP LOSS HIT</b>\n\n"
+                    f"{'🟢' if trade.direction=='BUY' else '🔴'} "
+                    f"<b>{trade.asset.replace('_','/')} {trade.direction}</b>\n\n"
+                    f"📍 Entry: {entry}  →  🛑 SL: {sl}\n"
+                    f"📉 <b>{pips} pips  ({pct}%)</b>\n\n"
+                    f"<i>Losses are part of the game. Risk was strictly managed.</i>"
+                )
+                try:
+                    if VIP_CHANNEL_ID: await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="HTML")
+                    await bot.send_message(chat_id=FREE_CHANNEL_ID, text=msg, parse_mode="HTML")
+                except Exception as e:
+                    print(f"[Monitor] SL post failed: {e}")
     finally:
         db.close()
 
@@ -436,25 +480,43 @@ async def daily_wrapup(bot):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     db = SessionLocal()
     try:
-        won = db.query(Trade).filter(Trade.status == "WON", Trade.closed_at.startswith(today)).all()
-        if not won:
-            print("[Wrapup] No winners today.")
+        closed = db.query(Trade).filter(
+            Trade.status.in_(["WON", "LOST"]), 
+            Trade.closed_at.startswith(today)
+        ).all()
+        
+        if not closed:
+            print("[Wrapup] No completed trades today.")
             return
 
         total_pips = 0.0
+        wins = 0
+        losses = 0
         lines = []
-        for t in won:
-            pips, pct = calculate_profit(t.asset, float(t.entry_price), float(t.tp_price), t.direction)
-            total_pips += pips
-            e = "🟢" if t.direction == "BUY" else "🔴"
-            lines.append(f"{e} {t.asset.replace('_','/')} {t.direction} → +{pips} pips (+{pct}%)")
+        
+        for t in closed:
+            if t.status == "WON":
+                pips, pct = calculate_profit(t.asset, float(t.entry_price), float(t.tp_price), t.direction)
+                total_pips += pips
+                wins += 1
+                e = "🟢" if t.direction == "BUY" else "🔴"
+                lines.append(f"{e} {t.asset.replace('_','/')} {t.direction} → +{pips} pips (WON)")
+            else:
+                pips, pct = calculate_profit(t.asset, float(t.entry_price), float(t.sl_price), t.direction)
+                total_pips += pips  # pips will be negative from calculate_profit for losses
+                losses += 1
+                e = "🟢" if t.direction == "BUY" else "🔴"
+                lines.append(f"{e} {t.asset.replace('_','/')} {t.direction} → {pips} pips (LOST)")
+
+        total = wins + losses
+        win_rate = round((wins / total) * 100, 1) if total > 0 else 0
 
         text = "\n".join(lines)
         x_post = (
             f"📊 DAILY RECAP — PROJECT APEX\n\n"
-            f"Today's winning ICT signals:\n{text}\n\n"
-            f"Total: +{round(total_pips, 1)} pips\n\n"
-            f"Real SMC/ICT analysis. No fake calls.\n"
+            f"Today's ICT signals:\n{text}\n\n"
+            f"Net: {round(total_pips, 1)} pips | Win Rate: {win_rate}%\n\n"
+            f"Transparent SMC/ICT trading. Both wins and losses.\n"
             f"Free Telegram for live alerts 👇"
         )
         if MAKE_WEBHOOK_URL:
@@ -467,11 +529,13 @@ async def daily_wrapup(bot):
 
         tg_msg = (
             f"📊 <b>DAILY RECAP</b>\n\n"
-            f"<b>Today's wins:</b>\n{html_module.escape(text)}\n\n"
-            f"<b>Total: +{round(total_pips, 1)} pips 💰</b>\n\n"
-            f"<i>Only winners get posted. Project Apex.</i>"
+            f"<b>Today's Trades:</b>\n{html_module.escape(text)}\n\n"
+            f"<b>Net Pips: {round(total_pips, 1)} pips</b>\n"
+            f"<b>Win Rate: {win_rate}% ({wins}W - {losses}L)</b>\n\n"
+            f"<i>100% Transparent Tracking. Project Apex.</i>"
         )
         try:
+            if VIP_CHANNEL_ID: await bot.send_message(chat_id=VIP_CHANNEL_ID, text=tg_msg, parse_mode="HTML")
             await bot.send_message(chat_id=FREE_CHANNEL_ID, text=tg_msg, parse_mode="HTML")
         except Exception as e:
             print(f"[Wrapup] Telegram error: {e}")

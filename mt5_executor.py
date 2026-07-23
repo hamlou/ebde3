@@ -6,16 +6,20 @@ import MetaTrader5 as mt5
 # CONFIGURATION
 # ==============================================================================
 
+import os
+
 # 1. MT5 Account Details
-MT5_LOGIN = 10011858378          
-MT5_PASSWORD = "Lg-1PzRo" 
-MT5_SERVER = "MetaQuotes-Demo" 
+# IMPORTANT: Never hardcode these. Use environment variables.
+MT5_LOGIN = int(os.getenv("MT5_LOGIN", "0"))
+MT5_PASSWORD = os.getenv("MT5_PASSWORD", "")
+MT5_SERVER = os.getenv("MT5_SERVER", "MetaQuotes-Demo")
 
 # Treat account as $50 instead of the real balance
 VIRTUAL_BALANCE = 50.0
 
-# 2. Render Bot URL
+# 2. Render Bot URL & Security
 API_BASE_URL = "https://ebde3.onrender.com"
+API_SECRET_KEY = os.getenv("API_SECRET_KEY", "change-me-in-production")
 
 # 3. Symbol Mapping
 # Our bot outputs symbols like "GOLD", "EUR_USD". MT5 usually uses "XAUUSD" or "EURUSD".
@@ -157,7 +161,8 @@ def report_status(trade_id, status, error=None):
         payload = {"status": status}
         if error:
             payload["error"] = error
-        requests.post(url, json=payload)
+        headers = {"X-API-Key": API_SECRET_KEY}
+        requests.post(url, json=payload, headers=headers)
     except Exception as e:
         print(f"Failed to report status to Render: {e}")
 
@@ -167,9 +172,10 @@ def main():
         return
 
     print("Polling Render API for pending signals every 5 seconds...")
+    headers = {"X-API-Key": API_SECRET_KEY}
     while True:
         try:
-            r = requests.get(f"{API_BASE_URL}/mt5/pending", timeout=10)
+            r = requests.get(f"{API_BASE_URL}/mt5/pending", headers=headers, timeout=10)
             if r.status_code == 200:
                 data = r.json()
                 if data.get("status") == "ok":

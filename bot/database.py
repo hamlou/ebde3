@@ -1,7 +1,11 @@
-from sqlalchemy import create_engine, Column, Integer, String, Boolean
+import os
+from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, Text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 Base = declarative_base()
+
+# DATABASE_URL lets us seamlessly migrate to Postgres (Supabase/Neon)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./apex.db")
 
 class User(Base):
     __tablename__ = 'users'
@@ -26,11 +30,18 @@ class Trade(Base):
     opened_at = Column(String)
     closed_at = Column(String, nullable=True)
 
-# For MVP, SQLite is perfect
-SQLALCHEMY_DATABASE_URL = "sqlite:///./apex.db"
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    event_type = Column(String, index=True)
+    description = Column(Text)
+    timestamp = Column(String)
 
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+    DATABASE_URL, 
+    # check_same_thread is only needed for SQLite
+    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

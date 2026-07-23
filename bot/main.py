@@ -9,9 +9,12 @@ from aiogram.filters import CommandStart
 
 from database import init_db, get_db, User, SessionLocal
 from whop_handler import WhopWebhookPayload, process_webhook
-from config import TELEGRAM_BOT_TOKEN, VIP_CHANNEL_ID, FREE_CHANNEL_ID, WHOP_WEBHOOK_SECRET
+from config import TELEGRAM_BOT_TOKEN, VIP_CHANNEL_ID, FREE_CHANNEL_ID, WHOP_WEBHOOK_SECRET, API_SECRET_KEY
 from telegram_actions import generate_invite_link, kick_user
 from chart_generator import get_tv_chart_html, TV_SYMBOL_MAP, get_chart_for_asset
+import hmac
+import hashlib
+from fastapi.security.api_key import APIKeyHeader
 
 # Initialize Telegram Bot
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -114,7 +117,14 @@ async def telegram_webhook(update: dict):
     return {"status": "ok"}
 
 @app.post("/webhook/whop")
-async def whop_webhook(payload: WhopWebhookPayload, db: Session = Depends(get_db)):
+async def whop_webhook(request: Request, payload: WhopWebhookPayload, db: Session = Depends(get_db)):
+    if WHOP_WEBHOOK_SECRET:
+        signature = request.headers.get("x-whop-signature", "")
+        body = await request.body()
+        expected_sig = hmac.new(WHOP_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected_sig, signature):
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
     result = process_webhook(payload, db)
     if result.get("message") == "User deactivated":
         whop_id = result.get("whop_id")
@@ -131,9 +141,17 @@ async def whop_webhook(payload: WhopWebhookPayload, db: Session = Depends(get_db
 def health_check():
     return {"status": "ok", "app": "Project Apex Trade Engine"}
 
+# ── API Key Dependency ─────────────────────────────────────────────────────
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=True)
+
+def get_api_key(api_key: str = Depends(api_key_header)):
+    if api_key != API_SECRET_KEY:
+        raise HTTPException(status_code=403, detail="Could not validate credentials")
+    return api_key
+
 # ── Debug: see full SMC/TA context for any asset ─────────────────────────────
 @app.get("/debug/analyze/{asset}")
-async def debug_analyze(asset: str):
+async def debug_analyze(asset: str, api_key: str = Depends(get_api_key)):
     """Show the real SMC+TA computed context for one asset."""
     import traceback
     try:
@@ -151,7 +169,7 @@ class MT5ConfirmRequest(BaseModel):
     error: str = None
 
 @app.get("/mt5/pending")
-def get_pending_mt5_trades():
+def get_pending_mt5_trades(api_key: str = Depends(get_api_key)):
     """Local Windows MT5 script polls this every 5 seconds to find new trades."""
     from database import SessionLocal, Trade
     db = SessionLocal()
@@ -177,7 +195,7 @@ def get_pending_mt5_trades():
         db.close()
 
 @app.post("/mt5/confirm/{trade_id}")
-def confirm_mt5_trade(trade_id: int, req: MT5ConfirmRequest):
+def confirm_mt5_trade(trade_id: int, req: MT5ConfirmRequest, api_key: str = Depends(get_api_key)):
     """Local Windows MT5 script reports back success or failure."""
     from database import SessionLocal, Trade
     db = SessionLocal()
@@ -195,7 +213,7 @@ def confirm_mt5_trade(trade_id: int, req: MT5ConfirmRequest):
 
 # ── Debug endpoint — manually trigger a market scan ──────────────────────────
 @app.get("/debug/scan-now")
-async def debug_scan_now():
+async def debug_scan_now(api_key: str = Depends(get_api_key)):
     """Manually trigger a market scan for testing."""
     import traceback
     try:
@@ -213,7 +231,7 @@ async def debug_scan_now():
 
 # ── Debug endpoint — manually trigger the full pipeline (1 trade + chart) ────
 @app.get("/debug/run-pipeline")
-async def debug_run_pipeline():
+async def debug_run_pipeline(api_key: str = Depends(get_api_key)):
     """Force-trigger the market scanner right now (posts to Telegram)."""
     import traceback
     try:
@@ -224,7 +242,7 @@ async def debug_run_pipeline():
 
 # ── Debug endpoint — test the TradingView chart screenshot ────────────────────
 @app.get("/debug/test-chart/{asset}")
-async def debug_test_chart(asset: str):
+async def debug_test_chart(asset: str, api_key: str = Depends(get_api_key)):
     """Test the ApiFlash + TradingView screenshot pipeline for a specific asset."""
     import traceback
     try:
