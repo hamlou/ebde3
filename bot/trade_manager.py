@@ -15,15 +15,7 @@ import httpx
 import asyncio
 from datetime import datetime, timezone
 from database import SessionLocal, Trade
-from config import MAKE_WEBHOOK_URL, FREE_CHANNEL_ID
-
-import os
-GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-_GROQ_KEYS = [k for k in [
-    os.getenv("GROQ_API_KEY", ""),
-    os.getenv("groq_api_key", ""),
-    os.getenv("groq", ""),
-] if k]
+from config import MAKE_WEBHOOK_URL, FREE_CHANNEL_ID, GEMINI_KEYS
 
 ASSET_BASKET = [
     "EUR_USD", "USD_JPY", "GBP_USD", "USD_CHF",
@@ -120,28 +112,29 @@ Include ALL 9 assets in the response — even ones scoring 20/100. I need the fu
         f"REAL computed market data:\n{json.dumps(contexts, indent=2)}"
     )
 
-    for i, key in enumerate(_GROQ_KEYS):
+    for i, key in enumerate(GEMINI_KEYS):
+        if not key:
+            continue
         try:
             async with httpx.AsyncClient(timeout=90.0) as client:
                 resp = await client.post(
-                    GROQ_API_URL,
-                    headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={key}",
+                    headers={"Content-Type": "application/json"},
                     json={
-                        "model": "llama-3.3-70b-versatile",
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user",   "content": user_prompt}
-                        ],
-                        "temperature": 0.2,          # Very low for deterministic reasoning
-                        "response_format": {"type": "json_object"}
+                        "contents": [{"parts": [{"text": system_prompt + "\n\n" + user_prompt}]}],
+                        "generationConfig": {
+                            "temperature": 0.2,
+                            "responseMimeType": "application/json"
+                        }
                     }
                 )
                 if resp.status_code == 429:
-                    print(f"[Groq] Key {i+1} rate-limited.")
+                    print(f"[Gemini] Key {i+1} rate-limited.")
                     continue
                 resp.raise_for_status()
-                raw    = resp.json()["choices"][0]["message"]["content"]
+                raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
                 parsed = json.loads(raw)
+                
                 # Handle both {"setups": [...]} and [...]
                 if isinstance(parsed, dict):
                     for v in parsed.values():
@@ -152,7 +145,7 @@ Include ALL 9 assets in the response — even ones scoring 20/100. I need the fu
                     parsed.sort(key=lambda x: x.get("conviction", 0), reverse=True)
                     return parsed
         except Exception as e:
-            print(f"[Groq] Key {i+1} error: {e}")
+            print(f"[Gemini] Key {i+1} error: {e}")
             continue
     return []
 
@@ -346,8 +339,10 @@ async def monitor_positions(bot):
 
 
 async def _tp_explanation(trade, pips, pct) -> str:
-    if not _GROQ_KEYS:
+    valid_keys = [k for k in GEMINI_KEYS if k]
+    if not valid_keys:
         return "Price delivered precisely to our target. Structure confirmed the bias."
+    
     prompt = (
         f"Our {trade.direction} on {trade.asset} from {trade.entry_price} hit TP at {trade.tp_price}. "
         f"+{pips} pips (+{pct}%). Write 2 punchy sentences why this worked from an ICT perspective. "
@@ -356,12 +351,12 @@ async def _tp_explanation(trade, pips, pct) -> str:
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             r = await client.post(
-                GROQ_API_URL,
-                headers={"Authorization": f"Bearer {_GROQ_KEYS[0]}", "Content-Type": "application/json"},
-                json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}]}
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={valid_keys[0]}",
+                headers={"Content-Type": "application/json"},
+                json={"contents": [{"parts": [{"text": prompt}]}]}
             )
             r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"].strip()
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception:
         return "Price delivered exactly as structure dictated. OB held perfectly."
 

@@ -13,3 +13,4 @@ pandas
 numpy
 smartmoneyconcepts
 ta
+google-generativeai
