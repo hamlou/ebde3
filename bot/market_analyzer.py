@@ -28,7 +28,7 @@ YAHOO_MAP = {
     "USD_CAD": "CAD=X",
     "GOLD":    "GC=F",
     "SILVER":  "SI=F",
-    "BTC":     "BTC-USD",
+    "US30":    "^DJI",
 }
 
 
@@ -208,6 +208,7 @@ def compute_ta(df: pd.DataFrame) -> dict:
     try:
         from ta.momentum import RSIIndicator
         from ta.trend import EMAIndicator, MACD as MACDIndicator
+        from ta.volatility import AverageTrueRange
 
         close = df["close"]
         price = float(close.iloc[-1])
@@ -237,6 +238,10 @@ def compute_ta(df: pd.DataFrame) -> dict:
         signal_line = float(macd_obj.macd_signal().iloc[-1])
         out["macd_direction"] = "bullish" if macd_line > signal_line else "bearish"
         out["macd_value"]     = round(macd_line, 6)
+        
+        # ATR
+        atr = AverageTrueRange(high=df["high"], low=df["low"], close=df["close"], window=14)
+        out["atr_14"] = round(float(atr.average_true_range().iloc[-1]), 5)
 
     except Exception as e:
         out["ta_error"] = str(e)

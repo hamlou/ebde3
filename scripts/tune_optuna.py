@@ -5,6 +5,8 @@ import asyncio
 import pandas as pd
 import optuna
 from datetime import datetime, timezone
+import warnings
+warnings.filterwarnings("ignore")
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'bot'))
 from market_analyzer import resample_4h, compute_smc, compute_ta
@@ -12,6 +14,7 @@ from trade_manager import analyze_with_real_data
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 CACHE_FILE = "backtest_cache.json"
+PIP_SIZE = {"EUR_USD": 0.0001, "USD_JPY": 0.01, "GBP_USD": 0.0001, "USD_CHF": 0.0001, "AUD_USD": 0.0001, "USD_CAD": 0.0001, "GOLD": 0.01, "SILVER": 0.01, "BTC": 1.0}
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -19,8 +22,7 @@ def load_cache():
             return json.load(f)
     return {}
 
-cache = load_cache()
-asset_data = {}
+CACHED_DF = {}
 
 def load_all_data():
     """Load MT5 exported data from CSVs."""
@@ -31,15 +33,12 @@ def load_all_data():
             df = pd.read_csv(csv_path)
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             df.set_index('timestamp', inplace=True)
-            asset_data[asset] = df
-    return asset_data
+            CACHED_DF[asset] = df
+    return CACHED_DF
 
 def simulate_trade_sync(asset: str, df: pd.DataFrame, current_idx, direction, entry, tp, sl, spread_multiplier=2.0):
     """Sync version of simulate_trade for fast Optuna tuning."""
-    pip_size = 0.0001
-    if "JPY" in asset: pip_size = 0.01
-    if "GOLD" == asset: pip_size = 0.01
-    if "BTC" == asset: pip_size = 1.0
+    pip_size = PIP_SIZE.get(asset, 0.0001)
     spread = pip_size * spread_multiplier
     
     for i in range(current_idx + 1, len(df)):
@@ -54,19 +53,30 @@ def simulate_trade_sync(asset: str, df: pd.DataFrame, current_idx, direction, en
             if low <= (tp - spread): return "WON"
     return "OPEN"
 
-async def run_objective(trial):
+async def run_objective(trial, is_test=False):
     conviction_threshold = trial.suggest_int("conviction_threshold", 60, 95)
     ote_width = trial.suggest_int("ote_width", 10, 30)
     spread_multiplier = trial.suggest_float("spread_multiplier", 1.0, 4.0)
     
     total_trades = 0
     total_wins = 0
+    total_r = 0.0
+    cache = load_cache()
     
-    for asset, df_1h in asset_data.items():
+    for asset, df_1h in CACHED_DF.items():
         if len(df_1h) < 100: continue
         df_4h = resample_4h(df_1h)
         
-        for i in range(50, len(df_4h)):
+        split_idx = int(len(df_4h) * 0.8)
+        start_idx = 50 if not is_test else split_idx
+        end_idx = split_idx if not is_test else len(df_4h)
+        
+        if not is_test:
+            start_idx = max(start_idx, split_idx - (15 * 6))
+        else:
+            start_idx = max(start_idx, end_idx - (5 * 6))
+            
+        for i in range(start_idx, end_idx):
             historical_4h = df_4h.iloc[:i]
             current_ts = historical_4h.index[-1]
             historical_1h = df_1h[df_1h.index <= current_ts]
@@ -95,7 +105,13 @@ async def run_objective(trial):
                 
             cache_key = f"{asset}_{current_ts.isoformat()}"
             analysis = cache.get(cache_key)
-            if not analysis: continue
+            if not analysis:
+                setups = await analyze_with_real_data([ctx])
+                analysis = setups[0] if setups else {"directional_bias": "NEUTRAL", "conviction": 0}
+                cache[cache_key] = analysis
+                with open(CACHE_FILE, "w") as f:
+                    json.dump(cache, f, indent=2)
+                await asyncio.sleep(0.1)
                 
             conv = analysis.get("conviction", 0)
             bias = analysis.get("directional_bias", "NEUTRAL").upper()
@@ -108,31 +124,47 @@ async def run_objective(trial):
                 
                 outcome = simulate_trade_sync(asset, df_1h, len(historical_1h)-1, bias, entry, tp, sl, spread_multiplier)
                 if outcome != "OPEN":
+                    pip_size = PIP_SIZE.get(asset, 0.0001)
+                    pips_won_lost = (tp - entry) / pip_size if outcome == "WON" else -abs(entry - sl) / pip_size
+                    risk_pips = abs(entry - sl) / pip_size
+                    r_multiple = pips_won_lost / risk_pips if risk_pips > 0 else 0
+                    total_r += r_multiple
                     total_trades += 1
                     if outcome == "WON": total_wins += 1
 
-    if total_trades < 10:
-        return 0.0
+    if total_trades < 30:
+        return -999.0
         
-    win_rate = total_wins / total_trades
-    return win_rate
+    return total_r / total_trades
 
 def objective_wrapper(trial):
-    return asyncio.run(run_objective(trial))
+    return asyncio.run(run_objective(trial, is_test=False))
+
+def test_wrapper(trial):
+    return asyncio.run(run_objective(trial, is_test=True))
 
 if __name__ == "__main__":
     print("Loading MT5 CSV data...")
     load_all_data()
-    if not asset_data:
+    if not CACHED_DF:
         print("No MT5 data found in data/. Please run auto_export_history.py first.")
         sys.exit(1)
         
-    print(f"Data loaded for {len(asset_data)} assets. Starting Optuna tuning...")
+    print(f"Data loaded for {len(asset_data)} assets. Starting Optuna tuning (Train Window)...")
     study = optuna.create_study(direction="maximize")
     study.optimize(objective_wrapper, n_trials=50)
     
-    print("\nBest Trial:")
-    print("  Value (Win Rate): ", study.best_trial.value)
+    print("\nBest Trial (Train):")
+    print("  Value (Expectancy R): ", study.best_trial.value)
     print("  Params: ")
     for key, value in study.best_trial.params.items():
         print(f"    {key}: {value}")
+        
+    # Walk-forward validation
+    print("\nRunning Walk-Forward Validation on Test Set (Last 20%)...")
+    test_expectancy = test_wrapper(study.best_trial)
+    print(f"  Test Value (Expectancy R): {test_expectancy}")
+    if test_expectancy > 0:
+        print("  ✅ Validation successful! Parameters hold up out-of-sample.")
+    else:
+        print("  ❌ Validation failed! System is overfitted to training data.")

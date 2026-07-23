@@ -55,7 +55,7 @@ TELEGRAM_WEBHOOK_PATH = f"/webhook/telegram/{TELEGRAM_BOT_TOKEN}"
 TELEGRAM_WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{TELEGRAM_WEBHOOK_PATH}"
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from trade_manager import scan_markets, monitor_positions, daily_wrapup
+from trade_manager import scan_markets, monitor_positions, daily_wrapup, poll_confirmations
 
 scheduler = AsyncIOScheduler()
 
@@ -74,6 +74,10 @@ async def lifespan(app: FastAPI):
     # ── Job 3: Daily Wrap-up — posts winning trades to X at 23:00 UTC every day
     scheduler.add_job(daily_wrapup, 'cron', hour=23, minute=0, args=[bot],
                       id="daily_wrapup", replace_existing=True)
+
+    # ── Job 4: Confirmation Poller — checks awaiting trades for 15m CHoCH every 15 minutes
+    scheduler.add_job(poll_confirmations, 'interval', minutes=15, args=[bot],
+                      id="confirmation_poller", replace_existing=True)
 
     scheduler.start()
     print("✅ Trade Engine started: Scanner(30m) | Monitor(5m) | Wrapup(23:00)")
@@ -217,18 +221,11 @@ def confirm_mt5_trade(trade_id: int, req: MT5ConfirmRequest, api_key: str = Depe
 # ── Debug endpoint — manually trigger a market scan ──────────────────────────
 @app.get("/debug/scan-now")
 async def debug_scan_now(api_key: str = Depends(get_api_key)):
-    """Manually trigger a market scan for testing."""
+    """Manually trigger a market scan for testing (posts to Telegram on signal)."""
     import traceback
     try:
-        from trade_manager import fetch_all_prices, analyze_all_assets
-        prices = await fetch_all_prices()
-        setups = await analyze_all_assets(prices)
-        return {
-            "status": "ok",
-            "prices": prices,
-            "setups_found": len(setups),
-            "setups": setups
-        }
+        await scan_markets(bot)
+        return {"status": "done", "message": "Market scan triggered. Check Telegram for new signals."}
     except Exception as e:
         return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -270,4 +267,5 @@ def read_root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

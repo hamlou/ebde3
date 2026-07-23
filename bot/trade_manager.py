@@ -27,19 +27,19 @@ _GROQ_KEYS = [k for k in [
 
 ASSET_BASKET = [
     "EUR_USD", "USD_JPY", "GBP_USD", "USD_CHF",
-    "AUD_USD", "USD_CAD", "GOLD", "SILVER", "BTC"
+    "AUD_USD", "USD_CAD", "GOLD", "SILVER", "US30"
 ]
 
 PIP_SIZE = {
     "EUR_USD": 0.0001, "USD_JPY": 0.01,  "GBP_USD": 0.0001,
     "USD_CHF": 0.0001, "AUD_USD": 0.0001,"USD_CAD": 0.0001,
-    "GOLD":    0.01,   "SILVER":  0.001,  "BTC":     1.0,
+    "GOLD":    0.01,   "SILVER":  0.001,  "US30":    1.0,
 }
 
 YAHOO_PRICE_MAP = {
     "EUR_USD": "EURUSD=X", "USD_JPY": "JPY=X",    "GBP_USD": "GBPUSD=X",
     "USD_CHF": "CHF=X",    "AUD_USD": "AUDUSD=X", "USD_CAD": "CAD=X",
-    "GOLD":    "GC=F",     "SILVER":  "SI=F",      "BTC":     "BTC-USD",
+    "GOLD":    "GC=F",     "SILVER":  "SI=F",      "US30":    "^DJI",
 }
 
 
@@ -223,8 +223,8 @@ async def scan_markets(bot):
         for ctx in valid_contexts:
             asset_name = ctx["asset"]
             
-            # A. Killzone Check (Exclude BTC)
-            if asset_name != "BTC" and not ((7 <= hour < 10) or (12 <= hour < 15)):
+            # A. Killzone Check (07:00 - 16:00 UTC)
+            if not (7 <= hour < 16):
                 continue
                 
             smc_data = ctx.get("4h_smc", {})
@@ -334,9 +334,16 @@ async def scan_markets(bot):
                     tp_price = fvg["bottom"] if direction == "BUY" else fvg["top"]
                     break
         
-        # Fallbacks in case the LLM ignored the ID instructions and just output floats
         if entry_price is None: entry_price = best.get("entry_price", 0.0)
         if tp_price is None: tp_price = best.get("tp_price", 0.0)
+        
+        # Calculate SL deterministically using ATR
+        atr = target_ctx.get("4h_ta", {}).get("atr_14", 0.0)
+        if atr > 0 and entry_price:
+            sl_price = entry_price - (1.5 * atr) if direction == "BUY" else entry_price + (1.5 * atr)
+            sl_price = round(sl_price, 5)
+        else:
+            sl_price = best.get("sl_price")
         
         if not entry_price or not tp_price or not sl_price:
             reason = f"[{asset}] REJECTED: Missing entry/tp/sl prices."
@@ -353,7 +360,7 @@ async def scan_markets(bot):
             risk_pct=str(best.get("risk_pct", 1.0)),
             conviction=int(best["conviction"]),
             status="OPEN",
-            mt5_status="PENDING",
+            mt5_status="AWAITING_CONFIRMATION",
             opened_at=datetime.now(timezone.utc).isoformat(),
         )
         db.add(trade)
@@ -476,6 +483,13 @@ async def monitor_positions(bot):
 
             if tp_hit:
                 pips, pct = calculate_profit(trade.asset, entry, tp, trade.direction)
+                
+                # Slippage Logging
+                actual_entry = getattr(trade, 'actual_entry_price', None)
+                if actual_entry:
+                    slip_pips, _ = calculate_profit(trade.asset, entry, float(actual_entry), "BUY") # pure diff
+                    print(f"[Monitor] Slippage on {trade.asset}: {abs(slip_pips)} pips")
+
                 trade.status   = "WON"
                 trade.closed_at = datetime.now(timezone.utc).isoformat()
                 db.commit()
@@ -509,6 +523,12 @@ async def monitor_positions(bot):
 
             elif sl_hit:
                 pips, pct = calculate_profit(trade.asset, entry, sl, trade.direction)
+                
+                actual_entry = getattr(trade, 'actual_entry_price', None)
+                if actual_entry:
+                    slip_pips, _ = calculate_profit(trade.asset, entry, float(actual_entry), "BUY")
+                    print(f"[Monitor] Slippage on {trade.asset}: {abs(slip_pips)} pips")
+                    
                 trade.status   = "LOST"
                 trade.closed_at = datetime.now(timezone.utc).isoformat()
                 db.commit()
@@ -640,5 +660,61 @@ async def daily_wrapup(bot):
             await bot.send_message(chat_id=FREE_CHANNEL_ID, text=tg_msg, parse_mode="HTML")
         except Exception as e:
             print(f"[Wrapup] Telegram error: {e}")
+    finally:
+        db.close()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JOB 4: poll_confirmations
+# ══════════════════════════════════════════════════════════════════════════════
+async def poll_confirmations(bot):
+    """
+    Checks trades in AWAITING_CONFIRMATION status.
+    If 15m candle closes inside the OB or forms a CHoCH, moves to PENDING.
+    If price invalidates setup, moves to CANCELLED.
+    """
+    db = SessionLocal()
+    try:
+        awaiting = db.query(Trade).filter(Trade.status == "OPEN", Trade.mt5_status == "AWAITING_CONFIRMATION").all()
+        if not awaiting:
+            return
+            
+        from market_analyzer import fetch_ohlcv, compute_smc
+        
+        for trade in awaiting:
+            df_15m = await fetch_ohlcv(trade.asset, interval="15m", period="5d")
+            if df_15m is None or len(df_15m) < 20: continue
+            
+            smc_15m = compute_smc(df_15m, "15m")
+            current_close = float(df_15m["close"].iloc[-1])
+            entry_price = float(trade.entry_price)
+            sl_price = float(trade.sl_price)
+            
+            # Simple invalidation rule: if price hits SL before confirming, cancel it
+            invalidated = (trade.direction == "BUY" and current_close <= sl_price) or \
+                          (trade.direction == "SELL" and current_close >= sl_price)
+            if invalidated:
+                trade.status = "CANCELLED"
+                db.commit()
+                print(f"[Confirm] #{trade.id} {trade.asset} setup invalidated before entry. Cancelled.")
+                continue
+            
+            # Wait for 15m CHoCH in our direction
+            confirmed = False
+            for choch in smc_15m.get("change_of_character", []):
+                if choch.get("direction", "").upper() == trade.direction:
+                    confirmed = True
+                    break
+                    
+            if confirmed:
+                trade.mt5_status = "PENDING"
+                db.commit()
+                print(f"[Confirm] #{trade.id} {trade.asset} 15m CHoCH confirmed! Sent to MT5.")
+                try:
+                    msg = f"⚡ <b>CONFIRMED ENTRY: {trade.asset} {trade.direction}</b> ⚡\n15m CHoCH formed. Firing to MT5."
+                    if VIP_CHANNEL_ID: await bot.send_message(chat_id=VIP_CHANNEL_ID, text=msg, parse_mode="HTML")
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[Confirm] Error: {e}")
     finally:
         db.close()

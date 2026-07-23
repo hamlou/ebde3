@@ -7,6 +7,8 @@ import MetaTrader5 as mt5
 # ==============================================================================
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # 1. MT5 Account Details
 # IMPORTANT: Never hardcode these. Use environment variables.
@@ -42,12 +44,15 @@ def connect_mt5():
         print("initialize() failed, error code =", mt5.last_error())
         return False
 
-    authorized = mt5.login(MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
-    if not authorized:
-        print(f"Failed to connect at account #{MT5_LOGIN}, error code: {mt5.last_error()}")
-        return False
+    if MT5_LOGIN != 0:
+        authorized = mt5.login(MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
+        if not authorized:
+            print(f"Failed to connect at account #{MT5_LOGIN}, error code: {mt5.last_error()}")
+            return False
+        print(f"SUCCESS: Connected to MT5 Account: {MT5_LOGIN}")
+    else:
+        print("SUCCESS: Connected to currently active MT5 Account (No explicit login provided)")
         
-    print(f"SUCCESS: Connected to MT5 Account: {MT5_LOGIN}")
     return True
 
 def calculate_lot_size(symbol: str, entry: float, sl: float, risk_pct: float) -> float:
