@@ -238,29 +238,34 @@ async def scan_markets(bot):
                     break
             
             if not has_sweep:
+                db.add(AuditLog(event_type="REJECTED", description=f"[{asset_name}] No liquidity sweep found in 4H structure.", timestamp=now_utc.isoformat()))
                 continue
                 
             # C. OTE Check (Fib 61.8 - 79.0)
-            # pct_of_range: 0 is Swing Low, 100 is Swing High.
-            # BUY OTE: 20.0 to 40.0 (price is deep in discount)
-            # SELL OTE: 60.0 to 80.0 (price is deep in premium)
             pct = smc_data.get("premium_discount", {}).get("pct_of_range", 50)
             in_ote = (20.0 <= pct <= 40.0) or (60.0 <= pct <= 80.0)
             
             if not in_ote:
+                db.add(AuditLog(event_type="REJECTED", description=f"[{asset_name}] Price not in OTE zone (pct={pct}).", timestamp=now_utc.isoformat()))
                 continue
                 
             filtered_contexts.append(ctx)
 
         if not filtered_contexts:
             print(f"[Scanner] {len(valid_contexts)} assets fetched, but none met deterministic Sweep/OTE/Killzone rules.")
+            db.commit()
             return
 
         all_setups = await analyze_with_real_data(filtered_contexts)
-        if not all_setups: return
+        if not all_setups: 
+            db.commit()
+            return
         
         best = all_setups[0]
-        if best.get("conviction", 0) < 75: return
+        if best.get("conviction", 0) < 75: 
+            db.add(AuditLog(event_type="REJECTED", description=f"[{best.get('asset', '?')}] AI conviction {best.get('conviction', 0)} < 75.", timestamp=now_utc.isoformat()))
+            db.commit()
+            return
 
         asset = best["asset"]
         direction = best["directional_bias"].upper()
@@ -271,20 +276,31 @@ async def scan_markets(bot):
                 # Re-verify OTE specifically for the AI's chosen direction
                 pct = ctx.get("4h_smc", {}).get("premium_discount", {}).get("pct_of_range", 50)
                 if direction == "BUY" and not (20.0 <= pct <= 40.0):
-                    print(f"[Scanner] {asset} REJECTED: AI said BUY but price is not in discount OTE (pct={pct}).")
+                    reason = f"[{asset}] REJECTED: AI said BUY but price is not in discount OTE (pct={pct})."
+                    print(f"[Scanner] {reason}")
+                    db.add(AuditLog(event_type="REJECTED", description=reason, timestamp=now_utc.isoformat()))
+                    db.commit()
                     return
                 if direction == "SELL" and not (60.0 <= pct <= 80.0):
-                    print(f"[Scanner] {asset} REJECTED: AI said SELL but price is not in premium OTE (pct={pct}).")
+                    reason = f"[{asset}] REJECTED: AI said SELL but price is not in premium OTE (pct={pct})."
+                    print(f"[Scanner] {reason}")
+                    db.add(AuditLog(event_type="REJECTED", description=reason, timestamp=now_utc.isoformat()))
+                    db.commit()
                     return
                 
                 htf_trend = ctx.get("4h_ta", {}).get("htf_trend")
                 if htf_trend:
                     if (direction == "BUY" and htf_trend == "bearish") or (direction == "SELL" and htf_trend == "bullish"):
-                        print(f"[Scanner] {asset} REJECTED: {direction} conflicts with HTF {htf_trend} trend.")
+                        reason = f"[{asset}] REJECTED: {direction} conflicts with HTF {htf_trend} trend."
+                        print(f"[Scanner] {reason}")
+                        db.add(AuditLog(event_type="REJECTED", description=reason, timestamp=now_utc.isoformat()))
+                        db.commit()
                         return
 
         # High-Impact News Filter
         if await check_news_filter(asset):
+            db.add(AuditLog(event_type="REJECTED", description=f"[{asset}] REJECTED due to upcoming high-impact news.", timestamp=now_utc.isoformat()))
+            db.commit()
             return
 
         existing = db.query(Trade).filter(Trade.asset == asset, Trade.status == "OPEN").first()
@@ -412,8 +428,11 @@ async def monitor_positions(bot):
             # Add spread/slippage buffer for realistic TP/SL checks
             spread_buffer = PIP_SIZE.get(trade.asset, 0.0001) * 2.0  # 2 pips buffer
             
-            tp_hit = (trade.direction == "BUY"  and price >= (tp - spread_buffer)) or \
-                     (trade.direction == "SELL" and price <= (tp + spread_buffer))
+            # Fix TP spread logic: TP needs to move FURTHER into profit
+            tp_hit = (trade.direction == "BUY"  and price >= (tp + spread_buffer)) or \
+                     (trade.direction == "SELL" and price <= (tp - spread_buffer))
+                     
+            # SL spread logic: SL triggers SOONER
             sl_hit = (trade.direction == "BUY"  and price <= (sl + spread_buffer)) or \
                      (trade.direction == "SELL" and price >= (sl - spread_buffer))
 
