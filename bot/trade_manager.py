@@ -14,7 +14,7 @@ import json
 import httpx
 import asyncio
 from datetime import datetime, timezone
-from database import SessionLocal, Trade
+from database import SessionLocal, Trade, AuditLog
 import os
 from config import MAKE_WEBHOOK_URL, FREE_CHANNEL_ID, VIP_CHANNEL_ID, GEMINI_KEYS
 
@@ -318,7 +318,6 @@ async def scan_markets(bot):
             opened_at=datetime.now(timezone.utc).isoformat(),
         )
         db.add(trade)
-        from database import AuditLog
         db.add(AuditLog(event_type="TRADE_OPENED", description=f"Opened {direction} on {asset} @ {best['entry_price']}. Conviction: {best['conviction']}.", timestamp=datetime.now(timezone.utc).isoformat()))
         db.commit()
         db.refresh(trade)
