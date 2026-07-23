@@ -16,6 +16,7 @@ import httpx
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
+from config import TWELVEDATA_API_KEY
 
 # ── Yahoo Finance symbol map ──────────────────────────────────────────────────
 YAHOO_MAP = {
@@ -61,8 +62,47 @@ async def fetch_ohlcv(asset: str, interval: str = "1h", period: str = "30d") -> 
 
         return df.dropna()
     except Exception as e:
-        print(f"[fetch_ohlcv] {asset} {interval}: {e}")
-        return None
+        print(f"[fetch_ohlcv] Yahoo Finance failed for {asset} {interval}: {e}")
+        
+    # FALLBACK to Twelve Data if Yahoo fails
+    if TWELVEDATA_API_KEY:
+        print(f"[fetch_ohlcv] Attempting Twelve Data fallback for {asset} {interval}...")
+        td_symbol = YAHOO_MAP.get(asset, "").replace("=X", "").replace("-USD", "/USD").replace("=F", "")
+        # Adjust symbol mapping for Twelve Data (e.g. EUR/USD, XAU/USD, BTC/USD)
+        if asset == "GOLD": td_symbol = "XAU/USD"
+        elif asset == "SILVER": td_symbol = "XAG/USD"
+        elif "USD" in asset and td_symbol == "JPY": td_symbol = "USD/JPY"
+        elif "USD" in asset and td_symbol == "CHF": td_symbol = "USD/CHF"
+        elif "USD" in asset and td_symbol == "CAD": td_symbol = "USD/CAD"
+        elif "_" in asset: td_symbol = asset.replace("_", "/")
+        
+        # Convert Yahoo interval to Twelve Data interval
+        td_interval = interval.replace("d", "day").replace("h", "h").replace("m", "min")
+        size = 300 if interval == "1h" else (90 if interval == "1d" else 100)
+        
+        td_url = f"https://api.twelvedata.com/time_series?symbol={td_symbol}&interval={td_interval}&outputsize={size}&apikey={TWELVEDATA_API_KEY}"
+        
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(td_url)
+                resp.raise_for_status()
+                data = resp.json()
+            
+            if "values" not in data:
+                print(f"[fetch_ohlcv] Twelve Data returned error: {data}")
+                return None
+                
+            df = pd.DataFrame(data["values"])
+            df.rename(columns={"datetime": "timestamp"}, inplace=True)
+            df.set_index(pd.to_datetime(df["timestamp"]), inplace=True)
+            df = df.astype({"open": float, "high": float, "low": float, "close": float, "volume": float})
+            df.drop(columns=["timestamp"], inplace=True)
+            df = df.sort_index() # Twelve Data returns newest first, so we reverse it
+            return df.dropna()
+        except Exception as e:
+            print(f"[fetch_ohlcv] Twelve Data fallback also failed for {asset}: {e}")
+            
+    return None
 
 
 def resample_4h(df_1h: pd.DataFrame) -> pd.DataFrame:
