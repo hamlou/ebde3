@@ -33,18 +33,26 @@ def save_cache(cache):
     with open(CACHE_FILE, "w") as f:
         json.dump(cache, f, indent=2)
 
-async def simulate_trade(df: pd.DataFrame, current_idx, direction, entry, tp, sl):
-    """Scan forward in df to see if TP or SL is hit first."""
+async def simulate_trade(asset: str, df: pd.DataFrame, current_idx, direction, entry, tp, sl):
+    """Scan forward in df to see if TP or SL is hit first with realistic spread buffer."""
+    
+    # Approx 2 pip spread for realistic fills
+    pip_size = 0.0001
+    if "JPY" in asset: pip_size = 0.01
+    if "GOLD" == asset: pip_size = 0.01
+    if "BTC" == asset: pip_size = 1.0
+    spread = pip_size * 2.0
+    
     for i in range(current_idx + 1, len(df)):
         row = df.iloc[i]
         high, low = row["high"], row["low"]
         
         if direction == "BUY":
-            if low <= sl: return "LOST"
-            if high >= tp: return "WON"
+            if low <= (sl + spread): return "LOST"
+            if high >= (tp - spread): return "WON"
         else:
-            if high >= sl: return "LOST"
-            if low <= tp: return "WON"
+            if high >= (sl - spread): return "LOST"
+            if low <= (tp + spread): return "WON"
     return "OPEN" # Didn't hit either before dataset ended
 
 async def run_backtest(asset="GOLD"):
@@ -80,9 +88,24 @@ async def run_backtest(asset="GOLD"):
         }
 
         # DETERMINISTIC PRE-FILTER:
-        # Only query LLM if price is actually inside a Premium/Discount zone and RSI isn't extreme
+        # Only query LLM if price is inside OTE, RSI isn't extreme, and liquidity swept.
         rsi = ctx["4h_ta"].get("rsi_14", 50)
         if rsi > 75 or rsi < 25:
+            continue
+            
+        smc = ctx.get("4h_smc", {})
+        
+        # Sweep Check
+        has_sweep = False
+        for liq in smc.get("liquidity_levels", []):
+            if liq.get("swept"):
+                has_sweep = True
+                break
+        if not has_sweep: continue
+        
+        # OTE Check
+        pct = smc.get("premium_discount", {}).get("pct_of_range", 50)
+        if not ((20.0 <= pct <= 40.0) or (60.0 <= pct <= 80.0)):
             continue
             
         # Check cache
@@ -110,8 +133,8 @@ async def run_backtest(asset="GOLD"):
             tp = analysis.get("tp_price")
             sl = analysis.get("sl_price")
             
-            # Simulate forward
-            outcome = await simulate_trade(df_1h, len(historical_1h)-1, bias, entry, tp, sl)
+            # Simulate forward with realistic spread
+            outcome = await simulate_trade(asset, df_1h, len(historical_1h)-1, bias, entry, tp, sl)
             
             results.append({
                 "ts": current_ts.isoformat(),

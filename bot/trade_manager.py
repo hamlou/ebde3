@@ -210,11 +210,6 @@ async def scan_markets(bot):
     now_utc = datetime.now(timezone.utc)
     hour = now_utc.hour
     
-    # KILLZONE CHECK: London (7-10 UTC) or NY (12-15 UTC)
-    if not ((7 <= hour < 10) or (12 <= hour < 15)):
-        print(f"[Scanner] {now_utc.strftime('%H:%M')} UTC is outside killzones (7-10, 12-15). Skipping scan.")
-        return
-
     print(f"\n[Scanner] Starting scan at {now_utc}")
     db = SessionLocal()
     try:
@@ -222,7 +217,46 @@ async def scan_markets(bot):
         valid_contexts = [c for c in contexts if c.get("current_price")]
         if not valid_contexts: return
 
-        all_setups = await analyze_with_real_data(valid_contexts)
+        # 1. Deterministic Pre-Filtering (Sweep & OTE & Killzone)
+        filtered_contexts = []
+        for ctx in valid_contexts:
+            asset_name = ctx["asset"]
+            
+            # A. Killzone Check (Exclude BTC)
+            if asset_name != "BTC" and not ((7 <= hour < 10) or (12 <= hour < 15)):
+                continue
+                
+            smc_data = ctx.get("4h_smc", {})
+            if "smc_error" in smc_data or not smc_data:
+                continue
+                
+            # B. Liquidity Sweep Check
+            has_sweep = False
+            for liq in smc_data.get("liquidity_levels", []):
+                if liq.get("swept"):
+                    has_sweep = True
+                    break
+            
+            if not has_sweep:
+                continue
+                
+            # C. OTE Check (Fib 61.8 - 79.0)
+            # pct_of_range: 0 is Swing Low, 100 is Swing High.
+            # BUY OTE: 20.0 to 40.0 (price is deep in discount)
+            # SELL OTE: 60.0 to 80.0 (price is deep in premium)
+            pct = smc_data.get("premium_discount", {}).get("pct_of_range", 50)
+            in_ote = (20.0 <= pct <= 40.0) or (60.0 <= pct <= 80.0)
+            
+            if not in_ote:
+                continue
+                
+            filtered_contexts.append(ctx)
+
+        if not filtered_contexts:
+            print(f"[Scanner] {len(valid_contexts)} assets fetched, but none met deterministic Sweep/OTE/Killzone rules.")
+            return
+
+        all_setups = await analyze_with_real_data(filtered_contexts)
         if not all_setups: return
         
         best = all_setups[0]
@@ -231,9 +265,18 @@ async def scan_markets(bot):
         asset = best["asset"]
         direction = best["directional_bias"].upper()
 
-        # HTF Trend Gate
-        for ctx in valid_contexts:
+        # HTF Trend Gate & Directional OTE strict check
+        for ctx in filtered_contexts:
             if ctx["asset"] == asset:
+                # Re-verify OTE specifically for the AI's chosen direction
+                pct = ctx.get("4h_smc", {}).get("premium_discount", {}).get("pct_of_range", 50)
+                if direction == "BUY" and not (20.0 <= pct <= 40.0):
+                    print(f"[Scanner] {asset} REJECTED: AI said BUY but price is not in discount OTE (pct={pct}).")
+                    return
+                if direction == "SELL" and not (60.0 <= pct <= 80.0):
+                    print(f"[Scanner] {asset} REJECTED: AI said SELL but price is not in premium OTE (pct={pct}).")
+                    return
+                
                 htf_trend = ctx.get("4h_ta", {}).get("htf_trend")
                 if htf_trend:
                     if (direction == "BUY" and htf_trend == "bearish") or (direction == "SELL" and htf_trend == "bullish"):
@@ -366,10 +409,13 @@ async def monitor_positions(bot):
             tp    = float(trade.tp_price)
             sl    = float(trade.sl_price)
 
-            tp_hit = (trade.direction == "BUY"  and price >= tp) or \
-                     (trade.direction == "SELL" and price <= tp)
-            sl_hit = (trade.direction == "BUY"  and price <= sl) or \
-                     (trade.direction == "SELL" and price >= sl)
+            # Add spread/slippage buffer for realistic TP/SL checks
+            spread_buffer = PIP_SIZE.get(trade.asset, 0.0001) * 2.0  # 2 pips buffer
+            
+            tp_hit = (trade.direction == "BUY"  and price >= (tp - spread_buffer)) or \
+                     (trade.direction == "SELL" and price <= (tp + spread_buffer))
+            sl_hit = (trade.direction == "BUY"  and price <= (sl + spread_buffer)) or \
+                     (trade.direction == "SELL" and price >= (sl - spread_buffer))
 
             if tp_hit:
                 pips, pct = calculate_profit(trade.asset, entry, tp, trade.direction)
