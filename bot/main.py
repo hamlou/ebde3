@@ -56,6 +56,7 @@ from drip_sequence import send_drip_messages, track_member_join, track_member_le
 from signal_pipeline import run_signal_pipeline
 from content_pipeline import run_content_pipeline
 from viral_engine import post_weekly_recap
+from engagement_posts import post_engagement_tweet
 from notify_bot import run_followup_bot
 from subscription_manager import check_expired_subscriptions, on_user_joined_vip
 
@@ -97,8 +98,16 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(check_expired_subscriptions, 'cron', hour=9, minute=0, args=[bot],
                       id="subscription_check", replace_existing=True)
 
+    # ── Job 9: Engagement Posts — 3x/day at peak hours (10:00, 15:00, 19:00 UTC)
+    scheduler.add_job(post_engagement_tweet, 'cron', hour=10, minute=15, args=[bot],
+                      id="engagement_morning", replace_existing=True)
+    scheduler.add_job(post_engagement_tweet, 'cron', hour=15, minute=30, args=[bot],
+                      id="engagement_afternoon", replace_existing=True)
+    scheduler.add_job(post_engagement_tweet, 'cron', hour=19, minute=45, args=[bot],
+                      id="engagement_evening", replace_existing=True)
+
     scheduler.start()
-    print("✅ Trade Engine started: Scanner(30m) | Monitor(5m) | Wrapup(23:00) | Drip(10:00) | ContentPipeline(45m) | WeeklyRecap(Sun 20:00) | SubCheck(09:00)")
+    print("✅ Trade Engine started: Scanner(30m) | Monitor(5m) | Wrapup(23:00) | Drip(10:00) | Pipeline(25m) | WeeklyRecap(Sun 20:00) | Engagement(3x/day)")
 
     if RENDER_EXTERNAL_URL:
         print(f"Setting Telegram webhook to: {TELEGRAM_WEBHOOK_URL}")

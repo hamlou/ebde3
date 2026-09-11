@@ -41,6 +41,7 @@ class TrackedTrade:
     created_at: str
     posted_50pct: bool = False
     posted_100pct: bool = False
+    tweet_id_50pct: str = ""
     status: str = "OPEN"  # OPEN, WON, LOST
 
 
@@ -379,8 +380,8 @@ async def capture_trade_chart(trade: dict, current_price: float, profit_pct: flo
 # X POSTING
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def post_to_x(text: str, image_bytes: bytes = None) -> bool:
-    """Post to X using cookies."""
+async def post_to_x(text: str, image_bytes: bytes = None, reply_to_id: str = None) -> tuple[bool, str]:
+    """Post to X using cookies. Returns (success, tweet_id)."""
     try:
         from x_cookies import post_tweet
         import tempfile
@@ -391,7 +392,7 @@ async def post_to_x(text: str, image_bytes: bytes = None) -> bool:
                 f.write(image_bytes)
                 image_path = f.name
 
-        result = await post_tweet(text, image_path)
+        result = await post_tweet(text, image_path, reply_to_id=reply_to_id)
 
         if image_path:
             try:
@@ -399,11 +400,11 @@ async def post_to_x(text: str, image_bytes: bytes = None) -> bool:
             except:
                 pass
 
-        return result.success
+        return result.success, result.tweet_id or ""
 
     except Exception as e:
         print(f"[X] Post failed: {e}")
-        return False
+        return False, ""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -452,19 +453,14 @@ async def monitor_trades():
         if progress >= 50 and not trade["posted_50pct"]:
             print(f"[Monitor] {trade['pair']} 50% target! Posting to X...")
 
-            # Generate post
             post_text = await generate_50pct_post(trade, price, profit_pct)
-
-            # Capture chart with TP/SL zones
             chart = await capture_trade_chart(trade, price, profit_pct)
 
-            # Post to X
-            success = await post_to_x(post_text, chart)
-            print(f"[X] 50% post: {'OK' if success else 'FAIL'}")
+            success, tweet_id = await post_to_x(post_text, chart)
+            print(f"[X] 50% post: {'OK' if success else 'FAIL'} (tweet_id: {tweet_id or 'none'})")
 
-            update_trade(trade["id"], {"posted_50pct": True})
+            update_trade(trade["id"], {"posted_50pct": True, "tweet_id_50pct": tweet_id or ""})
 
-            # Notify about 50% posted
             if success:
                 try:
                     from notify_bot import notify_50pct_posted
@@ -472,19 +468,21 @@ async def monitor_trades():
                 except Exception as e:
                     print(f"[Notify] Error: {e}")
 
-        # 100% target hit
+        # 100% target hit — reply to 50% tweet if we have it
         if progress >= 100 and not trade["posted_100pct"]:
-            print(f"[Monitor] {trade['pair']} 100% target! Short update to X...")
+            print(f"[Monitor] {trade['pair']} 100% target! Posting update to X...")
 
             post_text = await generate_100pct_post(trade, price, profit_pct)
-
             chart = await capture_trade_chart(trade, price, profit_pct)
-            success = await post_to_x(post_text, chart)
+
+            reply_to = trade.get("tweet_id_50pct", "")
+            if reply_to:
+                print(f"[X] Replying to 50% tweet: {reply_to}")
+            success, _ = await post_to_x(post_text, chart, reply_to_id=reply_to or None)
             print(f"[X] 100% post: {'OK' if success else 'FAIL'}")
 
             update_trade(trade["id"], {"posted_100pct": True, "status": "WON"})
 
-            # Notify about 100% posted
             if success:
                 try:
                     from notify_bot import notify_100pct_posted

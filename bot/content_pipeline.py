@@ -25,6 +25,8 @@ from config import VIP_CHANNEL_ID, FREE_CHANNEL_ID
 
 DEDUP_HOURS = 24
 MIN_POST_INTERVAL_MINUTES = 20
+PEAK_HOURS = range(13, 19)  # 13:00-18:59 UTC — London/NY overlap
+OFF_PEAK_MIN_INTERVAL = 40  # Slower posting outside peak
 
 
 def create_post_hash(post: SourcePost) -> str:
@@ -48,8 +50,10 @@ def is_duplicate(db, post: SourcePost) -> bool:
 
 
 def can_post_now(db) -> bool:
-    """Rate limit posts."""
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=MIN_POST_INTERVAL_MINUTES)
+    """Rate limit posts. Faster during peak hours, slower off-peak."""
+    now = datetime.now(timezone.utc)
+    interval = MIN_POST_INTERVAL_MINUTES if now.hour in PEAK_HOURS else OFF_PEAK_MIN_INTERVAL
+    cutoff = now - timedelta(minutes=interval)
 
     recent = db.query(Signal).filter(
         Signal.created_at >= cutoff.isoformat()
