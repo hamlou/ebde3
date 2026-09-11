@@ -5,13 +5,15 @@ from fastapi import FastAPI, Request, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
+from aiogram.filters import ChatMemberUpdatedFilter, IS_NOT_MEMBER, IS_MEMBER
 
 from database import init_db, get_db, User, SessionLocal
 from whop_handler import WhopWebhookPayload, process_webhook
 from config import TELEGRAM_BOT_TOKEN, VIP_CHANNEL_ID, FREE_CHANNEL_ID, WHOP_WEBHOOK_SECRET, API_SECRET_KEY
 from telegram_actions import generate_invite_link, kick_user
 from chart_generator import get_tv_chart_html, TV_SYMBOL_MAP, get_chart_for_asset
+from bot_menu import router as menu_router
+from admin_panel import router as admin_router
 import hmac
 import hashlib
 from fastapi.security.api_key import APIKeyHeader
@@ -19,35 +21,29 @@ from fastapi.security.api_key import APIKeyHeader
 # Initialize Telegram Bot
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
+dp.include_router(menu_router)
+dp.include_router(admin_router)
 
-# --- Telegram Bot Handlers ---
-@dp.message(CommandStart())
-async def command_start_handler(message: types.Message) -> None:
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("Welcome to Project Apex.\n\nPlease provide your Whop ID to link your account. e.g. /start user_xxxx")
-        return
-    whop_id = args[1]
-    db = SessionLocal()
-    user = db.query(User).filter(User.whop_id == whop_id).first()
-    if not user:
-        await message.answer("Whop ID not found. Please ensure you have purchased the subscription on Whop.")
-        db.close()
-        return
-    if not user.is_active:
-        await message.answer("Your subscription is not currently active.")
-        db.close()
-        return
-    user.telegram_id = str(message.from_user.id)
-    db.commit()
-    try:
-        invite_link = await generate_invite_link(bot, VIP_CHANNEL_ID)
-        await message.answer(f"Account linked successfully! Here is your exclusive VIP access link:\n\n{invite_link}\n\n⚠️ Do not share this link, it will only work once.")
-    except Exception as e:
-        await message.answer(f"Error generating invite link. Please contact support.")
-        print(f"Invite error: {e}")
-    finally:
-        db.close()
+# --- Track Free Channel Joins/Leaves for Drip Sequence ---
+@dp.chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER))
+async def on_user_join(event: types.ChatMemberUpdated):
+    chat_id = str(event.chat.id)
+    telegram_id = str(event.new_chat_member.user.id)
+
+    if chat_id == FREE_CHANNEL_ID:
+        await track_member_join(
+            telegram_id=telegram_id,
+            username=event.new_chat_member.user.username
+        )
+    elif chat_id == VIP_CHANNEL_ID:
+        await on_user_joined_vip(bot, telegram_id)
+
+
+@dp.chat_member(ChatMemberUpdatedFilter(IS_MEMBER >> IS_NOT_MEMBER))
+async def on_user_leave(event: types.ChatMemberUpdated):
+    if str(event.chat.id) == FREE_CHANNEL_ID:
+        await track_member_leave(telegram_id=str(event.old_chat_member.user.id))
+
 
 # --- FastAPI Setup ---
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
@@ -56,6 +52,12 @@ TELEGRAM_WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{TELEGRAM_WEBHOOK_PATH}"
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from trade_manager import scan_markets, monitor_positions, daily_wrapup, poll_confirmations
+from drip_sequence import send_drip_messages, track_member_join, track_member_leave
+from signal_pipeline import run_signal_pipeline
+from content_pipeline import run_content_pipeline
+from viral_engine import post_weekly_recap
+from notify_bot import run_followup_bot
+from subscription_manager import check_expired_subscriptions, on_user_joined_vip
 
 scheduler = AsyncIOScheduler()
 
@@ -79,8 +81,24 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(poll_confirmations, 'interval', minutes=15, args=[bot],
                       id="confirmation_poller", replace_existing=True)
 
+    # ── Job 5: Drip Sequence — sends automated nurturing messages at 10:00 UTC daily
+    scheduler.add_job(send_drip_messages, 'cron', hour=10, minute=0, args=[bot],
+                      id="drip_sequence", replace_existing=True)
+
+    # ── Job 6: Content Pipeline — mirrors content from wolfoftrading to X + Telegram
+    scheduler.add_job(run_content_pipeline, 'interval', minutes=25, args=[bot],
+                      id="content_pipeline", replace_existing=True)
+
+    # ── Job 7: Weekly Recap — posts performance summary every Sunday at 20:00 UTC
+    scheduler.add_job(post_weekly_recap, 'cron', day_of_week='sun', hour=20, minute=0, args=[bot],
+                      id="weekly_recap", replace_existing=True)
+
+    # ── Job 8: Subscription Check — daily at 09:00 UTC, kicks expired users
+    scheduler.add_job(check_expired_subscriptions, 'cron', hour=9, minute=0, args=[bot],
+                      id="subscription_check", replace_existing=True)
+
     scheduler.start()
-    print("✅ Trade Engine started: Scanner(30m) | Monitor(5m) | Wrapup(23:00)")
+    print("✅ Trade Engine started: Scanner(30m) | Monitor(5m) | Wrapup(23:00) | Drip(10:00) | ContentPipeline(45m) | WeeklyRecap(Sun 20:00) | SubCheck(09:00)")
 
     if RENDER_EXTERNAL_URL:
         print(f"Setting Telegram webhook to: {TELEGRAM_WEBHOOK_URL}")
@@ -88,6 +106,10 @@ async def lifespan(app: FastAPI):
     else:
         print("Starting long polling for local development...")
         asyncio.create_task(dp.start_polling(bot))
+
+    # Start followup bot (admin dashboard) in background
+    asyncio.create_task(run_followup_bot())
+    print("✅ Followup bot (admin dashboard) started")
     yield
     scheduler.shutdown()
     if RENDER_EXTERNAL_URL:
@@ -262,8 +284,63 @@ async def debug_test_chart(asset: str, api_key: str = Depends(get_api_key)):
 @app.get("/")
 def read_root():
     return {"status": "Project Apex Trade Engine is running.", "endpoints": [
-        "/debug/scan-now", "/debug/run-pipeline", "/debug/test-chart/{asset}", "/tv-chart/{asset}"
+        "/debug/scan-now", "/debug/run-pipeline", "/debug/test-chart/{asset}",
+        "/debug/signal-pipeline", "/tv-chart/{asset}"
     ]}
+
+
+# ── Debug endpoint — manually trigger content pipeline ────────────────────────
+@app.get("/debug/content-pipeline")
+async def debug_content_pipeline(api_key: str = Depends(get_api_key)):
+    """Manually trigger the content pipeline (fetch from wolfoftrading, rewrite, post)."""
+    import traceback
+    try:
+        await run_content_pipeline(bot)
+        return {"status": "done", "message": "Content pipeline triggered. Check X and Telegram for posts."}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+
+# ── Debug endpoint — manually trigger signal pipeline ────────────────────────
+@app.get("/debug/signal-pipeline")
+async def debug_signal_pipeline(api_key: str = Depends(get_api_key)):
+    """Manually trigger the signal pipeline (fetch from source channels, rewrite, post)."""
+    import traceback
+    try:
+        await run_signal_pipeline(bot)
+        return {"status": "done", "message": "Signal pipeline triggered. Check X and Telegram for posts."}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+
+# ── Debug endpoint — post a manual signal ─────────────────────────────────────
+@app.post("/debug/manual-signal")
+async def debug_manual_signal(
+    asset: str,
+    direction: str,
+    entry: float,
+    tp: float,
+    sl: float,
+    api_key: str = Depends(get_api_key)
+):
+    """Manually create and post a signal for testing."""
+    import traceback
+    try:
+        from signal_pipeline import manual_post_signal
+        success = await manual_post_signal(
+            asset=asset,
+            direction=direction,
+            entry_price=entry,
+            tp_prices=[tp],
+            sl_price=sl,
+            bot=bot,
+        )
+        if success:
+            return {"status": "ok", "message": f"Posted {direction} {asset} signal"}
+        else:
+            return {"status": "skipped", "message": "Signal was duplicate or rate limited"}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
 if __name__ == "__main__":
     import uvicorn
